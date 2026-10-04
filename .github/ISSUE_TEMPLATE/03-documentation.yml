@@ -1,0 +1,28 @@
+name: Documentation improvement
+description: Report missing, unclear, incorrect, or outdated documentation.
+title: "[Docs]: "
+labels: ["area: docs", "needs triage"]
+assignees: []
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Documentation location
+      placeholder: "For example: docs/how-it-works.md#5-sources-and-what-counts-as-new"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current problem
+      description: What is missing, unclear, incorrect, or no longer accurate?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_change
+    attributes:
+      label: Proposed improvement
+    validations:
+      required: false

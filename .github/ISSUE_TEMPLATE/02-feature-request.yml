@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose an improvement grounded in a clear monitoring need.
+title: "[Feature]: "
+labels: ["needs triage"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem first so maintainers can find the best solution. The engine is read-only by design: proposals that act on tiktok.com (like, comment, reply, follow) or that forge TikTok's request signatures are out of scope here. Drafting and posting replies belongs to the Nextbrowser TikTok reply agent.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: What do you want to know about TikTok that the monitor does not tell you today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed solution
+      description: What should the monitor report, and how often?
+    validations:
+      required: true
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: Pages and requests
+      description: Which tiktok.com pages or requests would this read, and how often? Every page costs proxy traffic, and TikTok answers a profile that reads fast with a captcha.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - Yes, I can contribute an implementation
+        - Yes, with maintainer guidance
+        - I can help test or document it
+        - Not at this time
+    validations:
+      required: false

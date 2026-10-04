@@ -1,0 +1,63 @@
+{
+  "name": "@nextbrowser-oss/tiktok-monitoring",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The open-source TikTok monitoring engine for Nextbrowser: new videos and comments from the creators you watch, comments on your own videos, mentions, keywords and engagement jumps, ranked by urgency, read from a browser profile.",
+  "keywords": [
+    "nextbrowser",
+    "tiktok",
+    "monitoring",
+    "social-listening",
+    "comments",
+    "mentions",
+    "creators",
+    "competitors",
+    "browser-automation",
+    "nbc"
+  ],
+  "homepage": "https://github.com/nextbrowser-oss/nextbrowser-tiktok-monitoring#readme",
+  "bugs": {
+    "url": "https://github.com/nextbrowser-oss/nextbrowser-tiktok-monitoring/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nextbrowser-oss/nextbrowser-tiktok-monitoring.git"
+  },
+  "author": "Nextbrowser contributors",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "import": "./dist/node/index.js"
+    }
+  },
+  "bin": {
+    "tiktok-monitor": "dist/node/bin.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "render:terminal": "node scripts/render-terminal.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "happy-dom": "^20.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.9"
+  }
+}

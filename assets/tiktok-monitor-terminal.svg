@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1140" height="506" viewBox="0 0 1140 506" role="img" aria-label="Example tiktok-monitor output: comments on your video, mentions and keyword comments under a creator's video ranked by urgency, a new video, a views jump, and a follower change">
+  <rect x="0.5" y="0.5" width="1139" height="505" rx="12" fill="#0b1120" stroke="#1f2937"/>
+  <path d="M12.5 0.5h1115a12 12 0 0 1 12 12v28h-1139v-28a12 12 0 0 1 12-12z" fill="#111827"/>
+  <circle cx="24" cy="20" r="6" fill="#ff5f57"/>
+  <circle cx="44" cy="20" r="6" fill="#febc2e"/>
+  <circle cx="64" cy="20" r="6" fill="#28c840"/>
+  <text x="570" y="25" text-anchor="middle" fill="#6b7280" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">tiktok-monitor — sample output</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#e5e7eb">
+    <text x="28" y="72"><tspan fill="#2dd4bf">$</tspan> tiktok-monitor run --profile acme --creators rivalwear --keywords acme</text>
+    <text x="28" y="98" xml:space="preserve"><tspan fill="#6b7280">09:00</tspan>  <tspan fill="#60a5fa">signed in</tspan> as <tspan fill="#c4b5fd">@acme</tspan></text>
+    <text x="28" y="124" xml:space="preserve"><tspan fill="#6b7280">09:00</tspan>  <tspan fill="#94a3b8">pass</tspan> <tspan fill="#c4b5fd">@acme</tspan>: starting line: 3 sources, 6 matches; 9 videos read; followers: 2 read, 0 changed</text>
+    <text x="28" y="150" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#f87171">HIGH</tspan>    <tspan fill="#c4b5fd">@mila.makes</tspan> commented on your video: does the large one ship to Canada?</text>
+    <text x="28" y="176" xml:space="preserve"><tspan fill="#6b7280">     </tspan>   <tspan fill="#a7f3d0">[Comments on your video · Asks a question · No reply yet]</tspan>  <tspan fill="#64748b">https://www.tiktok.com/@acme/video/7557812345678901234</tspan></text>
+    <text x="28" y="202" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#f87171">HIGH</tspan>    <tspan fill="#c4b5fd">@jules.k</tspan> mentioned you under <tspan fill="#c4b5fd">@rivalwear</tspan>'s video: honestly <tspan fill="#c4b5fd">@acme</tspan> does this better</text>
+    <text x="28" y="228" xml:space="preserve"><tspan fill="#6b7280">     </tspan>   <tspan fill="#a7f3d0">[Mentions you]</tspan>  <tspan fill="#64748b">https://www.tiktok.com/@rivalwear/video/7557890123456789012</tspan></text>
+    <text x="28" y="254" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#94a3b8">low</tspan>     <tspan fill="#c4b5fd">@tom_rides</tspan> commented under <tspan fill="#c4b5fd">@rivalwear</tspan>'s video: is this the same as acme? looks identical</text>
+    <text x="28" y="280" xml:space="preserve"><tspan fill="#6b7280">     </tspan>   <tspan fill="#a7f3d0">[Asks a question]</tspan>  <tspan fill="#64748b">https://www.tiktok.com/@rivalwear/video/7557890123456789012</tspan></text>
+    <text x="28" y="306" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#94a3b8">low</tspan>     <tspan fill="#c4b5fd">@rivalwear</tspan> posted a video: Fall drop is live, 30% off this week #fallfits</text>
+    <text x="28" y="332" xml:space="preserve"><tspan fill="#6b7280">     </tspan>   <tspan fill="#64748b">https://www.tiktok.com/@rivalwear/video/7558012345678901234</tspan></text>
+    <text x="28" y="358" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#60a5fa">views</tspan> <tspan fill="#c4b5fd">@rivalwear</tspan>: 2,140 → 31,800 <tspan fill="#34d399">(+29,660)</tspan></text>
+    <text x="28" y="384" xml:space="preserve"><tspan fill="#6b7280">     </tspan>   <tspan fill="#64748b">https://www.tiktok.com/@rivalwear/video/7557890123456789012</tspan></text>
+    <text x="28" y="410" xml:space="preserve"><tspan fill="#6b7280">09:30</tspan>  <tspan fill="#94a3b8">pass</tspan> <tspan fill="#c4b5fd">@acme</tspan>: 3 sources: 4 new (2 urgent) of 9 matches; 9 videos, 2 comment lists read; followers: 2 read, 0 changed; 1 jump</text>
+    <text x="28" y="436" xml:space="preserve"><tspan fill="#6b7280">10:00</tspan>  <tspan fill="#60a5fa">followers</tspan> <tspan fill="#c4b5fd">@acme</tspan> (you): 12,480 → 12,517 <tspan fill="#34d399">(+37)</tspan></text>
+    <text x="28" y="462" xml:space="preserve"><tspan fill="#6b7280">10:00</tspan>  <tspan fill="#94a3b8">pass</tspan> <tspan fill="#c4b5fd">@acme</tspan>: 3 sources: 0 new of 9 matches; 9 videos read; followers: 2 read, 1 changed</text>
+  </g>
+</svg>

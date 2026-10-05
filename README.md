@@ -171,7 +171,7 @@ This is an early release (`0.x`). Known limits:
 - **Not yet verified live.** TikTok's web data is undocumented. The data block, the grid's `data-e2e` attributes and the comment list's shape follow what tiktok.com's web app is known to serve, and every read is covered by tests against stand-in pages of those shapes, but none of it has been run against tiktok.com from this package yet. Expect the first live runs to need fixes; the [troubleshooting](docs/troubleshooting.md) page says what to capture.
 - **Comments may be refused.** TikTok's web app signs its comment-list calls. The monitor makes the call plainly, and TikTok may answer it with nothing. Then comments are skipped for the pass with a note, and the rest of the monitoring goes on.
 - **No search of all TikTok.** Search needs signed calls and draws captchas quickly, so the monitor does not search. It watches the creators where your conversation happens instead.
-- **The first 20 comments.** A comment list is read one page deep, in TikTok's own order, which is not newest first. On a very busy video a new comment can be missed.
+- **Busy videos are read over several passes.** A comment list comes in TikTok's own order, not newest first. The monitor pages through it until it has found the new comments, up to 3 pages a video per pass, and goes on from there on the next pass; after 3 such passes it gives up on the rest of that video's backlog, with a note.
 - **Comments have no links of their own.** TikTok has no stable link to a single comment, so a comment's link is the video it is under.
 
 Proposals and bugs go to [GitHub Issues](https://github.com/nextbrowser-oss/nextbrowser-tiktok-monitoring/issues). An issue is a proposal, not a release commitment.

@@ -1,7 +1,7 @@
 // A stand-in tiktok.com for engine tests. The engine labels every evaluate
 // with what it reads ("me", "ready @acme", "profile @acme", "video 7423…",
-// "comments 7423…"), so the fake answers by label instead of running the
-// scripts; the scripts themselves are tested against stand-in pages in
+// "comments 7423…", "comments 7423… @40" for a later page), so the fake
+// answers by label instead of running the scripts; the scripts themselves are tested against stand-in pages in
 // scripts.test.ts.
 
 import type { MonitorBrowser } from "../browser.js";
@@ -55,6 +55,8 @@ export class FakeTikTok implements MonitorBrowser {
   creators: Record<string, FakeCreator> = {};
   /** Comments by video id, in the order the list returns them. */
   comments: Record<string, RawComment[]> = {};
+  /** How many comments one page of the list holds, as count=20 asks. */
+  pageSize = 20;
   readonly opened: string[] = [];
   readonly labels: string[] = [];
 
@@ -70,9 +72,18 @@ export class FakeTikTok implements MonitorBrowser {
     return this.answer(label) as T;
   }
 
-  /** The comment lists read, by video id, in order. */
+  /** The comment list pages read, by video id, in order: a list read three
+   *  pages deep is there three times. */
   get listsRead(): string[] {
-    return this.labels.filter((label) => label.startsWith("comments ")).map((label) => label.slice("comments ".length));
+    return this.pagesRead.map((page) => page.split("@")[0]!);
+  }
+
+  /** The comment list pages read, as "id@cursor", in order. */
+  get pagesRead(): string[] {
+    return this.labels.filter((label) => label.startsWith("comments ")).map((label) => {
+      const [id, cursor] = commentsLabel(label);
+      return `${id}@${cursor}`;
+    });
   }
 
   /** The video pages fetched, by id, in order. */
@@ -154,15 +165,24 @@ export class FakeTikTok implements MonitorBrowser {
       return { ...meta, has_data: true, status_code: 0, video: raw } satisfies VideoSnapshot;
     }
     if (label.startsWith("comments ")) {
-      const id = label.slice("comments ".length);
+      const [id, cursor] = commentsLabel(label);
       const meta = this.meta(label);
-      if (!meta.ok) return { ...meta, unsigned: false, comments: [], total: null } satisfies CommentsSnapshot;
-      if (this.unsigned) return { ...meta, ok: false, unsigned: true, refused: "an empty answer (HTTP 200)", comments: [], total: null } satisfies CommentsSnapshot;
-      const comments = this.comments[id] ?? [];
-      return { ...meta, unsigned: false, comments, total: comments.length } satisfies CommentsSnapshot;
+      const none = { unsigned: false, comments: [], total: null, cursor: null, has_more: false };
+      if (!meta.ok) return { ...meta, ...none } satisfies CommentsSnapshot;
+      if (this.unsigned) return { ...meta, ...none, ok: false, unsigned: true, refused: "an empty answer (HTTP 200)" } satisfies CommentsSnapshot;
+      const all = this.comments[id] ?? [];
+      const page = all.slice(cursor, cursor + this.pageSize);
+      const next = cursor + page.length;
+      return { ...meta, unsigned: false, comments: page, total: all.length, cursor: next, has_more: next < all.length } satisfies CommentsSnapshot;
     }
     throw new Error(`the fake has no answer for "${label}"`);
   }
+}
+
+/** commentsLabel reads "comments <id>" or "comments <id> @<cursor>". */
+function commentsLabel(label: string): [string, number] {
+  const [id = "", cursor = "@0"] = label.slice("comments ".length).split(" ");
+  return [id, Number(cursor.slice(1)) || 0];
 }
 
 /** printed writes a count the way the grid prints it. */

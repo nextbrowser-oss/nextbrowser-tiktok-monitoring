@@ -13,15 +13,17 @@ sequenceDiagram
   Pass->>T: open /robots.txt (the landing page)
   Pass->>T: fetch / (home page HTML)
   T-->>Pass: who is signed in
-  loop your profile (signed in), then each watched creator
+  loop your profile (signed in), then each watched creator, longest-waiting comments first
     Pass->>T: open /@handle, wait for the grid
     T-->>Pass: followers, video grid
     loop the newest videos
       Pass->>T: fetch /@handle/video/id
       T-->>Pass: description, exact counts
       opt the comment count grew
-        Pass->>T: fetch /api/comment/list/?aweme_id=id
-        T-->>Pass: the first 20 comments
+        loop up to 3 pages, until the new comments are accounted for
+          Pass->>T: fetch /api/comment/list/?aweme_id=id&cursor=n
+          T-->>Pass: 20 comments, the next cursor
+        end
       end
     end
   end
@@ -65,6 +67,8 @@ Unlike Instagram, a signed-out profile is not the end of a pass.
 
 A creator is read the way a person looks at them: the pass opens `https://www.tiktok.com/@handle` in the tab. That is the one flow tiktok.com serves to any browser, signed in or not.
 
+The pass reads your own profile first, then the creators in the order they were added. The exception is a creator whose comments had to wait for a later pass (see [comments](#4-comments)): the creators holding the longest-waiting comments go first. Comments are read from their creator's page, so this order is per creator; without it, a busy video early in the order would spend the pass's comment reads every time, and the creators after it would wait until their comments aged out.
+
 The data block arrives with the HTML, but the video grid does not: the web app draws it afterwards from its own call. So after the page loads, the pass asks every half second, for up to twenty seconds, whether the page has drawn what it needs:
 
 - the grid, `[data-e2e="user-post-item"]`;
@@ -98,16 +102,24 @@ Every video in the grid becomes an item, newest or not, so a creator who posted 
 
 A comment list is the expensive read, and the one TikTok guards most. The pass reads one only when the video's comment count grew since it last looked:
 
-- Every watched video has a **watermark**: its comment count when its comments were last read, or when it was first seen.
+- Every watched video has a **watermark**: its comment count when its comments were last read, or when it was first seen, and the time it was taken.
 - A count above the watermark means there is something new. The pass reads the list and moves the watermark up.
 - A video posted after the source's starting line has a watermark of 0: every comment on it is new.
 - A video whose page served no data has no exact count, so its watermark waits for a pass that gets one.
 
-One pass reads at most `maxCommentReads` lists (10 by default). A video past that keeps its old watermark and is read on the next pass, so nothing is skipped, only delayed. The pass notes how many videos wait.
+The list is the call the web app makes when its comment panel opens and as it is scrolled: `/api/comment/list/?aweme_id={id}&count=20&cursor={n}&aid=1988`, with the profile's cookies. It answers `{status_code, total, cursor, has_more, comments: [{cid, text, create_time, digg_count, reply_comment_total, user: {unique_id, nickname}}]}`.
 
-The list is the call the web app makes when its comment panel opens: `/api/comment/list/?aweme_id={id}&count=20&cursor=0&aid=1988`, with the profile's cookies. It answers `{status_code, total, comments: [{cid, text, create_time, digg_count, reply_comment_total, user: {unique_id, nickname}}]}`.
+**Paging.** The list comes in TikTok's own order, not newest first, so a new comment with no likes can sit pages below the top on a busy video. The pass asks for page after page, from the cursor each page returns, until the comments written after the watermark's time account for what the count grew by, or the list ends. Then the watermark moves to that count.
 
-**Fallback:** the web app signs this call, and the monitor does not. On a creator's page, where the web app is running, TikTok's own scripts may sign it on the way out; when nothing does, TikTok is known to answer with nothing, with a page, or with a non-zero `status_code`. The pass treats any of these, and a first page with no comments for a video that has some, as a refusal:
+One video gets at most 3 pages a pass. A busy video that needs more keeps its old watermark and a **backlog**: where the list stopped, and how many new comments were found so far. The next pass goes on from there, and the pass notes "N busy videos have more new comments than one pass reads". After 3 passes on the same backlog the pass gives up on the rest, moves the watermark on, and says so, so that a list that never accounts for its count is not paged on every pass for good.
+
+**The budget.** One pass asks for at most `maxCommentReads` pages (10 by default), across every video; a busy video's later pages count too. A video past that keeps its old watermark and is read on the next pass, so nothing is skipped, only delayed. The pass notes how many videos wait. A waiting video is read before the ones that did not wait, and its creator's page is opened first, so the same busy video cannot starve the others pass after pass.
+
+**The watermark moves last.** The comments a read returns become events only once the creator's videos have all been read. Until then the watermark stays where it was: a pass cut short in between — a rate limit on the next page, Stop, a tab that closed — leaves the old watermark, and the next pass reads those comments again instead of losing them.
+
+**An empty list.** A first page with no comments for a video whose count grew is a list that is turned off or held for review, or TikTok's refusal in a quieter form. One such video is skipped alone, with its old watermark, and the other videos are read. After 3 passes in a row the pass moves its watermark to the count and notes why, so it is not asked for again until more comments arrive. A second video coming back empty in the same pass is taken for TikTok's refusal, below, and counts against neither video.
+
+**Fallback:** the web app signs this call, and the monitor does not. On a creator's page, where the web app is running, TikTok's own scripts may sign it on the way out; when nothing does, TikTok is known to answer with nothing, with a page, or with a non-zero `status_code`. The pass treats any of these, and empty lists from two videos in one pass, as a refusal:
 
 - it notes "TikTok did not answer the comment list without its own signature; comments were skipped this pass (see troubleshooting)";
 - it sets `summary.commentsRefused`, and logs the answer;
@@ -116,7 +128,7 @@ The list is the call the web app makes when its comment panel opens: `/api/comme
 
 The rest of the pass — new videos, counts, followers — goes on.
 
-The list is one page, in TikTok's own order, which is not newest first. On a very busy video a new comment can fall outside those 20. Freshness is judged by each comment's own `create_time`, so one that surfaces in a later read is still announced while it is inside `maxItemAgeMs`.
+Freshness is judged by each comment's own `create_time`, so a comment that surfaces in a later read is still announced while it is inside `maxItemAgeMs`.
 
 TikTok has no stable link to one comment: the web app opens a video and its comment panel, never a single comment. A comment's link is therefore the video it is under.
 
@@ -132,7 +144,7 @@ A **source** is one stream of items:
 
 The first time a source is read, what it holds is its **starting line**: the pass records the time and announces nothing from it. From then on, an item is new when:
 
-- the pass has not seen it before (the state keeps the last 5,000 item keys, across all sources);
+- the pass has not seen it before (the state keeps the last 5,000 item keys, across all sources; a key seen again moves to the newest end, so an item still on show is not forgotten and announced twice);
 - it was created after the source's starting line;
 - it is not older than `maxItemAgeMs` (72 hours by default: comments keep arriving on TikTok for days after a video is posted).
 
@@ -213,10 +225,13 @@ Once the reads are done, the pass opens `about:blank`, so no TikTok page is left
 | HTTP 403 or 451 on the home page | Stops: TikTok is not available through this proxy's country. | `blocked` |
 | A creator not found, private, or drawn without a grid | Notes it and goes on with the next creator. | `notes` |
 | A video page without data | Uses the grid's figures and goes on. | `partialVideos` |
-| A comment list TikTok will not answer | Skips comments for the pass, keeps the watermarks, goes on. | `commentsRefused` |
+| A comment list TikTok will not answer, or empty lists from two videos | Skips comments for the pass, keeps the watermarks, goes on. | `commentsRefused` |
+| An empty list from one video whose count grew | Skips that video, keeps its watermark, reads the others; moves the watermark on after 3 passes, with a note. | `notes` |
+| A busy video with more new comments than 3 pages | Keeps its watermark and goes on from where it stopped next pass. | `commentReadsUnfinished` |
+| Something unexpected: a browser or CDP error | Stops, with the error in a note. | `failed` |
 | A signed-out profile | Reads the public creators; your own videos wait. | `signedIn: false`, `loginRequired` |
 
-A pass that stops keeps everything it read before the stop, and every source it did not reach keeps its old state. Each of these has an entry in [troubleshooting](troubleshooting.md).
+A pass that stops keeps everything it read before the stop, and every source it did not reach keeps its old state. Comments read from a creator whose read the stop interrupted are not announced, and their watermarks stay where they were, so the next pass reads them again. Each of these has an entry in [troubleshooting](troubleshooting.md).
 
 ## What it never does
 

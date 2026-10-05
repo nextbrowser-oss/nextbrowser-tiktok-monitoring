@@ -14,12 +14,20 @@
 // A creator is read by opening their page, the one flow tiktok.com serves to
 // any browser, signed in or not. Their newest videos' pages are then fetched
 // for exact counts, and a video's comment list is asked for only when its
-// comment count grew since the last look. A pass reads at most
-// maxCommentReads lists; a video past that waits for the next pass with its
-// old watermark, so nothing is skipped, only delayed. When TikTok will not
-// answer the comment list without its own signature, comments are skipped for
-// the pass, with a note, and the watermarks stay where they were so a later
-// pass tries again.
+// comment count grew since the last look. The list is ranked, not ordered by
+// time, so it is paged until the comments written since the watermark account
+// for what the count grew by, up to MAX_COMMENT_PAGES; a busy video that needs
+// more is picked up where it stopped on the next pass. A pass asks for at
+// most maxCommentReads pages; a video past that waits for the next pass with
+// its old watermark, and the videos that have waited longest are read first,
+// so nothing is skipped, only delayed. When TikTok will not answer the
+// comment list without its own signature, comments are skipped for the pass,
+// with a note, and the watermarks stay where they were so a later pass tries
+// again.
+//
+// A watermark only moves once the comments it covers have been considered:
+// a pass cut short between reading a list and announcing it leaves the old
+// watermark, and the next pass reads those comments again.
 
 import type { MonitorBrowser } from "./browser.js";
 import { parseCount } from "./counts.js";
@@ -49,6 +57,8 @@ import {
   type VideoSnapshot,
 } from "./scripts.js";
 import {
+  MAX_COMMENT_PAGES,
+  MAX_HELD_PASSES,
   MAX_HISTORY,
   MAX_PASS_NOTES,
   MAX_SEEN,
@@ -130,6 +140,12 @@ export interface PassSummary {
    *  because this one had read its share. */
   commentReads: number;
   commentReadsDeferred: number;
+  /** Comment pages asked for: a busy video's list takes more than one, and
+   *  maxCommentReads counts these. */
+  commentPages: number;
+  /** Busy videos whose new comments were not all found in the pages this
+   *  pass could spend on them; the next pass goes on from there. */
+  commentReadsUnfinished: number;
   /** TikTok would not answer a comment list without its own signature, so
    *  comments were skipped for the rest of the pass. */
   commentsRefused: boolean;
@@ -137,6 +153,10 @@ export interface PassSummary {
   followerChanges: number;
   engagementChanges: number;
   stopped: boolean;
+  /** The pass ended on something unexpected — a browser or CDP error, a
+   *  bug — rather than on anything TikTok did: the error, as written. The
+   *  notes say so too. */
+  failed?: string;
   notes: string[];
 }
 
@@ -192,6 +212,18 @@ export async function runPass(deps: PassDeps): Promise<PassResult> {
   return new Pass(deps).run();
 }
 
+/** The comment fields of a video's watch, all of which a thread read sets
+ *  together. */
+const COMMENT_FIELDS = ["commentsRead", "commentsReadAt", "commentsBacklog", "commentsEmpty", "commentsDueAt"] as const;
+type CommentFields = Pick<VideoWatch, (typeof COMMENT_FIELDS)[number]>;
+
+/** What a thread read found, and the comment fields it leaves the video
+ *  with, which wait until the comments have been considered. */
+interface ThreadRead {
+  items: TikTokItem[];
+  fields?: CommentFields;
+}
+
 interface SourceRead {
   key: string;
   source: ItemSource;
@@ -214,11 +246,19 @@ class Pass {
   private state: MonitorState;
   private readonly events: MonitorEvent[] = [];
   private readonly matches = new Map<string, Match>();
+  /** Item keys seen, oldest first. A Set keeps the order keys were added
+   *  in, so a key seen again is moved to the end by deleting and adding it. */
   private readonly seen: Set<string>;
-  private readonly seenOrder: string[];
   private readonly sources: Record<string, SourceState> = {};
   private readonly videos: Record<string, VideoWatch>;
   private readonly planned = new Set<string>();
+  /** Videos whose comment list came back empty this pass, with their count
+   *  then. Counted against the video only once the pass has finished without
+   *  a refusal: a second empty list in the same pass means TikTok refused
+   *  them both. */
+  private readonly emptyLists = new Map<string, number>();
+  private backlogsDropped = 0;
+  private completed = false;
   private readonly keywords: Matcher;
   private readonly excluded: Matcher;
   private readonly urgent: Matcher;
@@ -240,6 +280,8 @@ class Pass {
     partialVideos: 0,
     commentReads: 0,
     commentReadsDeferred: 0,
+    commentPages: 0,
+    commentReadsUnfinished: 0,
     commentsRefused: false,
     followerChecks: 0,
     followerChanges: 0,
@@ -257,8 +299,7 @@ class Pass {
     this.log = makeLogger(deps.log, this.now);
     this.at = this.now();
     this.state = normalizeState(deps.state);
-    this.seenOrder = [...this.state.seen];
-    this.seen = new Set(this.seenOrder);
+    this.seen = new Set(this.state.seen);
     this.videos = { ...this.state.videos };
     const settings = this.state.settings;
     this.keywords = keywordMatcher(settings.keywords);
@@ -273,14 +314,11 @@ class Pass {
       await this.land();
       await this.readAccount();
       const own = settings.watchOwnVideos && !!this.handle;
-      if (own) await this.readCreator(this.handle, true);
-      for (const handle of settings.creators) {
-        if (handle.toLowerCase() === this.handle.toLowerCase()) continue;
-        await this.readCreator(handle, false);
-      }
+      for (const reader of this.readOrder(own)) await this.readCreator(reader.handle, reader.own);
       if (!own && settings.creators.length === 0) {
         this.note("Nothing to watch yet: add creators, or sign the profile in to watch your own videos.");
       }
+      this.completed = true;
     } catch (error) {
       if (error instanceof StopRequested) {
         this.summary.stopped = true;
@@ -294,8 +332,9 @@ class Pass {
         this.summary.blocked = error.message;
         this.note(error.message);
       } else {
-        this.note(`The pass failed: ${errorText(error)}`);
-        this.log("pass_error", { error: errorText(error) });
+        this.summary.failed = errorText(error);
+        this.note(`The pass failed: ${this.summary.failed}`);
+        this.log("pass_error", { error: this.summary.failed });
       }
     } finally {
       await this.park();
@@ -388,6 +427,30 @@ class Pass {
 
   // --- creators --------------------------------------------------------------
 
+  /** readOrder is who is read this pass: the account's own videos, then the
+   *  creators in the order they were added — except that the creators
+   *  holding comments that had to wait for a later pass go first, the
+   *  longest-waiting first. Comments are read from their creator's page, so
+   *  the order is per creator. Without it, a busy video early in the order
+   *  would spend maxCommentReads on every pass, and the creators after it
+   *  would wait until their comments aged out. */
+  private readOrder(own: boolean): { handle: string; own: boolean }[] {
+    const order = [
+      ...(own ? [{ handle: this.handle, own: true }] : []),
+      ...this.state.settings.creators
+        .filter((handle) => handle.toLowerCase() !== this.handle.toLowerCase())
+        .map((handle) => ({ handle, own: false })),
+    ];
+    const waiting = new Map<string, number>();
+    for (const watch of Object.values(this.videos)) {
+      if (watch.commentsDueAt === undefined) continue;
+      const key = watch.handle.toLowerCase();
+      waiting.set(key, Math.min(waiting.get(key) ?? watch.commentsDueAt, watch.commentsDueAt));
+    }
+    // The sort is stable: creators with nothing waiting keep their order.
+    return order.sort((left, right) => waited(waiting.get(left.handle.toLowerCase()), waiting.get(right.handle.toLowerCase())));
+  }
+
   /** readCreator reads one creator, or the account itself: their follower
    *  count, their videos, the newest ones' exact counts, and the new comments
    *  under those. */
@@ -433,22 +496,45 @@ class Pass {
     }
 
     const limit = own ? settings.ownVideos : settings.videosPerCreator;
-    const watched = new Set(newest(page.videos, limit).map((cell) => cell.id));
+    const watched = newest(page.videos, limit).map((cell) => cell.id);
     const commentsSource = this.state.sources[commentsKey];
-    const items: TikTokItem[] = [];
-    const comments: TikTokItem[] = [];
+    const facts = new Map<string, VideoFacts>();
+    const gains = new Map<string, number>();
     for (const cell of page.videos) {
-      let facts = gridFacts(cell, handle);
-      let gained: number | undefined;
-      if (watched.has(cell.id)) {
-        const detail = await this.readVideo(facts.author, cell.id);
-        if (detail) facts = detailFacts(detail, facts);
-        gained = this.watchVideo(facts, own);
-        if (readComments) comments.push(...await this.readThread(facts, own, commentsSource));
-        else this.keepWatermark(facts);
+      let fact = gridFacts(cell, handle);
+      if (watched.includes(cell.id)) {
+        const detail = await this.readVideo(fact.author, cell.id);
+        if (detail) fact = detailFacts(detail, fact);
+        const gained = this.watchVideo(fact, own);
+        if (gained !== undefined) gains.set(cell.id, gained);
       }
-      const addressed = !own && this.handle && mentions(facts.desc, this.handle) ? "mention" : undefined;
-      const item = videoItem(facts, addressed, gained);
+      facts.set(cell.id, fact);
+    }
+
+    // The videos whose comments have waited longest are read first, so one
+    // busy video cannot keep the others' waiting pass after pass. What a read
+    // does to a watermark is staged until its comments have been considered.
+    const comments: TikTokItem[] = [];
+    const staged: [string, CommentFields][] = [];
+    const due = watched
+      .map((id) => facts.get(id))
+      .filter((fact): fact is VideoFacts => !!fact)
+      .sort((left, right) => waited(this.videos[left.id]?.commentsDueAt, this.videos[right.id]?.commentsDueAt));
+    for (const fact of due) {
+      if (!readComments) {
+        this.keepWatermark(fact);
+        continue;
+      }
+      const thread = await this.readThread(fact, own, commentsSource);
+      comments.push(...thread.items);
+      if (thread.fields) staged.push([fact.id, thread.fields]);
+    }
+
+    const items: TikTokItem[] = [];
+    for (const cell of page.videos) {
+      const fact = facts.get(cell.id)!;
+      const addressed = !own && this.handle && mentions(fact.desc, this.handle) ? "mention" : undefined;
+      const item = videoItem(fact, addressed, gains.get(cell.id));
       if (item) items.push(item);
     }
 
@@ -465,6 +551,7 @@ class Pass {
         items: comments,
       });
     }
+    for (const [id, fields] of staged) this.setComments(id, fields);
   }
 
   /** openCreator opens a creator's page, waits until it has drawn its grid or
@@ -533,7 +620,7 @@ class Pass {
       ...optional("shares", known(facts.shares, previous?.shares)),
       ...optional("saves", known(facts.saves, previous?.saves)),
       ...(facts.views !== undefined ? (facts.viewsApproximate ? { approximate: true } : {}) : previous?.approximate ? { approximate: true } : {}),
-      ...(previous?.commentsRead !== undefined ? { commentsRead: previous.commentsRead } : {}),
+      ...commentFields(previous),
       checkedAt: this.at,
       history: previous?.history ?? [],
     };
@@ -577,66 +664,169 @@ class Pass {
   /** readThread reads a video's comments when its count grew past the
    *  watermark. A video seen for the first time only sets its watermark,
    *  unless it was posted after the source started: then every comment on it
-   *  is new. */
-  private async readThread(facts: VideoFacts, own: boolean, source: SourceState | undefined): Promise<TikTokItem[]> {
+   *  is new.
+   *
+   *  TikTok ranks the list rather than ordering it by time, so a new comment
+   *  with no likes can sit pages below the top. The read goes on page by page
+   *  until the comments written since the watermark account for what the
+   *  count grew by, or the list ends; then the watermark moves to that count.
+   *  A read that runs out of pages first — MAX_COMMENT_PAGES, or the pass's
+   *  maxCommentReads — keeps the old watermark and leaves a backlog the next
+   *  pass goes on with. The fields it returns are applied by the caller only
+   *  once the comments have been considered. */
+  private async readThread(facts: VideoFacts, own: boolean, source: SourceState | undefined): Promise<ThreadRead> {
     const count = facts.partial ? undefined : facts.comments;
     // Without the video's own counts there is no telling whether anything was
     // added; the watermark waits for a pass that gets them.
-    if (count === undefined) return [];
+    if (count === undefined) return { items: [] };
     const watch = this.videos[facts.id];
+    const held = commentFields(watch);
     const postedSince = !!source && facts.createdAt !== undefined && facts.createdAt >= source.since;
     const mark = watch?.commentsRead ?? (postedSince ? 0 : count);
-    if (count <= mark) {
-      this.setWatermark(facts.id, count);
-      return [];
-    }
-    if (this.summary.commentsRefused) {
-      this.setWatermark(facts.id, mark);
-      return [];
-    }
-    if (this.summary.commentReads >= this.state.settings.maxCommentReads) {
-      // Keep the old watermark: the next pass sees the growth and reads it.
+    // Comments written after this line are what the count grew by. A video
+    // seen for the first time draws it now, or at 0 when it was posted after
+    // the source started; a watermark saved before the line was kept takes
+    // the source's starting line.
+    const line = watch?.commentsRead === undefined ? (postedSince ? 0 : this.at) : watch.commentsReadAt ?? source?.since ?? 0;
+    const backlog = watch?.commentsBacklog;
+    if (!backlog && count <= mark) return { items: [], fields: { commentsRead: count, commentsReadAt: this.at } };
+    const kept: CommentFields = { ...held, commentsRead: mark, commentsReadAt: line };
+    if (this.summary.commentsRefused) return { items: [], fields: kept };
+    const budget = this.state.settings.maxCommentReads;
+    if (this.summary.commentPages >= budget) {
+      // Keep the old watermark: the next pass sees the growth and reads it,
+      // before the videos that did not wait.
       this.summary.commentReadsDeferred += 1;
-      this.setWatermark(facts.id, mark);
-      return [];
+      return { items: [], fields: { ...kept, commentsDueAt: held.commentsDueAt ?? this.at } };
     }
-    const thread = await this.fetch<CommentsSnapshot>(commentsScript(facts.id), `comments ${facts.id}`);
-    this.summary.commentReads += 1;
-    if (thread.unsigned || (thread.ok && thread.comments.length === 0)) {
-      // An empty first page for a video with comments is the same refusal in
-      // a quieter form. Nothing more is asked for this pass: TikTok answers
-      // every list the same way, and each ask is one more unsigned call.
-      this.summary.commentsRefused = true;
-      this.note(COMMENTS_REFUSED_NOTE);
-      this.log("comments_refused", { video: facts.id, status: thread.status, reason: thread.reason, refused: thread.refused });
-      this.setWatermark(facts.id, mark);
-      return [];
-    }
-    if (!thread.ok) {
-      this.log("thread_failed", { video: facts.id, status: thread.status, reason: thread.reason, refused: thread.refused });
-      this.setWatermark(facts.id, mark);
-      return [];
-    }
+
+    const target = backlog?.target ?? count;
+    const growth = target - mark;
+    const since = Math.floor(line / 1000) * 1000;
     const context = videoContext(facts);
     const items: TikTokItem[] = [];
-    for (const raw of thread.comments) {
-      const item = commentItem(raw, context, addressedBy(raw.text, this.handle, own));
-      if (item) items.push(item);
+    const ids = new Set<string>();
+    let cursor = backlog?.cursor ?? 0;
+    let found = backlog?.found ?? 0;
+    let pages = 0;
+    let read = 0;
+    let done = false;
+    while (pages < MAX_COMMENT_PAGES && (pages === 0 || this.summary.commentPages < budget)) {
+      const thread = await this.fetch<CommentsSnapshot>(commentsScript(facts.id, cursor), cursor ? `comments ${facts.id} @${cursor}` : `comments ${facts.id}`);
+      if (pages === 0) this.summary.commentReads += 1;
+      this.summary.commentPages += 1;
+      pages += 1;
+      if (thread.unsigned) {
+        this.refuseComments(facts.id, thread);
+        break;
+      }
+      if (!thread.ok) {
+        this.log("thread_failed", { video: facts.id, cursor, status: thread.status, reason: thread.reason, refused: thread.refused });
+        break;
+      }
+      read += 1;
+      if (thread.comments.length === 0) {
+        // Past the end of a list that was read before is the end. An empty
+        // first page for a video whose count grew is a list that is turned
+        // off or held for review, or TikTok's refusal in a quieter form.
+        if (cursor === 0) return this.emptyList(facts, count, kept, thread);
+        done = true;
+        break;
+      }
+      for (const raw of thread.comments) {
+        if (ids.has(raw.cid)) continue;
+        ids.add(raw.cid);
+        if (raw.create_time !== null && raw.create_time * 1000 >= since) found += 1;
+        const item = commentItem(raw, context, addressedBy(raw.text, this.handle, own));
+        if (item) items.push(item);
+      }
+      if (found >= growth || !thread.has_more) {
+        done = true;
+        break;
+      }
+      cursor = thread.cursor !== null && thread.cursor > cursor ? thread.cursor : cursor + thread.comments.length;
     }
-    this.setWatermark(facts.id, Math.max(count, thread.total ?? 0));
-    return items;
+
+    // Nothing came back: the watermark and any backlog stay as they were.
+    if (read === 0) return { items: [], fields: kept };
+    const settled: CommentFields = { commentsRead: target, commentsReadAt: backlog?.at ?? this.at };
+    if (done) return { items, fields: settled };
+    const passes = (backlog?.passes ?? 0) + 1;
+    if (passes >= MAX_HELD_PASSES) {
+      // A list that never accounts for its count — comments held for review,
+      // or more than a few passes can page through — would otherwise be
+      // paged on every pass for good.
+      this.backlogsDropped += 1;
+      this.log("comments_backlog_dropped", { video: facts.id, watermark: mark, target, found, passes });
+      return { items, fields: settled };
+    }
+    this.summary.commentReadsUnfinished += 1;
+    this.log("comments_backlog", { video: facts.id, cursor, target, found, passes });
+    return {
+      items,
+      fields: { ...kept, commentsBacklog: { cursor, target, found, at: backlog?.at ?? this.at, passes }, commentsDueAt: held.commentsDueAt ?? this.at },
+    };
+  }
+
+  /** emptyList handles a list that came back empty although the count grew.
+   *  One such video in a pass is skipped alone, and counted against it when
+   *  the pass ends; a second one in the same pass is TikTok refusing the
+   *  call, not two videos with comments off. */
+  private emptyList(facts: VideoFacts, count: number, kept: CommentFields, thread: CommentsSnapshot): ThreadRead {
+    this.log("comments_empty", { video: facts.id, comments: count, status: thread.status });
+    if (this.emptyLists.size > 0 && !this.emptyLists.has(facts.id)) this.refuseComments(facts.id, thread);
+    else this.emptyLists.set(facts.id, count);
+    return { items: [], fields: kept };
+  }
+
+  /** refuseComments stops comment reads for the rest of the pass: TikTok
+   *  answers every list the same way, and each ask is one more unsigned
+   *  call. */
+  private refuseComments(id: string, thread: CommentsSnapshot): void {
+    this.summary.commentsRefused = true;
+    this.note(COMMENTS_REFUSED_NOTE);
+    this.log("comments_refused", { video: id, status: thread.status, reason: thread.reason, refused: thread.refused });
   }
 
   /** keepWatermark follows a video's comment count while its comments are not
    *  read, so turning them on later does not read a backlog as new. */
   private keepWatermark(facts: VideoFacts): void {
     if (facts.partial || facts.comments === undefined) return;
-    this.setWatermark(facts.id, facts.comments);
+    this.setComments(facts.id, { commentsRead: facts.comments, commentsReadAt: this.at });
   }
 
-  private setWatermark(id: string, comments: number): void {
+  /** setComments replaces a watched video's comment fields with these. */
+  private setComments(id: string, fields: CommentFields): void {
     const watch = this.videos[id];
-    if (watch) this.videos[id] = { ...watch, commentsRead: comments };
+    if (!watch) return;
+    const rest: VideoWatch = { ...watch };
+    for (const key of COMMENT_FIELDS) delete rest[key];
+    this.videos[id] = { ...rest, ...commentFields(fields) };
+  }
+
+  /** settleEmptyLists counts this pass's empty lists against their videos,
+   *  and moves on the watermark of one that has come back empty
+   *  MAX_HELD_PASSES passes in a row, so it is not asked for on every pass for
+   *  good. Only a pass that ran to its end without a refusal counts: an empty
+   *  list then says something about the video, not about TikTok. */
+  private settleEmptyLists(): void {
+    if (!this.completed || this.summary.commentsRefused) return;
+    let movedOn = 0;
+    for (const [id, count] of this.emptyLists) {
+      const watch = this.videos[id];
+      if (!watch) continue;
+      const empty = (watch.commentsEmpty ?? 0) + 1;
+      if (empty < MAX_HELD_PASSES) {
+        this.videos[id] = { ...watch, commentsEmpty: empty };
+        continue;
+      }
+      movedOn += 1;
+      this.log("comments_empty_moved_on", { video: id, watermark: watch.commentsRead, comments: count, passes: empty });
+      this.setComments(id, { commentsRead: count, commentsReadAt: this.at });
+    }
+    if (movedOn > 0) {
+      this.note(`TikTok's comment list for ${plural(movedOn, "video")} came back empty ${MAX_HELD_PASSES} passes in a row (comments off, or held for review); ${movedOn === 1 ? "its watermark" : "their watermarks"} moved on so it is not asked for again until more comments arrive.`);
+    }
   }
 
   // --- deciding what is new --------------------------------------------------
@@ -690,10 +880,13 @@ class Pass {
     if (previous) this.sources[key] = { ...previous, note };
   }
 
+  /** remember records a key as the newest seen. A key seen again moves to
+   *  the end, so an item still on show is never the oldest key and is not
+   *  cut from the bounded list while it can still be read — and announced —
+   *  again. */
   private remember(key: string): void {
-    if (this.seen.has(key)) return;
+    this.seen.delete(key);
     this.seen.add(key);
-    this.seenOrder.push(key);
   }
 
   // --- followers -------------------------------------------------------------
@@ -761,8 +954,13 @@ class Pass {
    *  source that is no longer configured is forgotten, so adding it back
    *  starts a fresh baseline. */
   private finish(): void {
+    this.settleEmptyLists();
     const deferred = this.summary.commentReadsDeferred;
     if (deferred > 0) this.note(`${deferred} video${deferred === 1 ? "" : "s"} with new comments wait${deferred === 1 ? "s" : ""} for the next pass (maxCommentReads).`);
+    const unfinished = this.summary.commentReadsUnfinished;
+    if (unfinished > 0) this.note(`${plural(unfinished, "busy video")} ${unfinished === 1 ? "has" : "have"} more new comments than one pass reads; the next pass goes on from where this one stopped.`);
+    const dropped = this.backlogsDropped;
+    if (dropped > 0) this.note(`${plural(dropped, "busy video")} had more new comments than ${MAX_HELD_PASSES} passes could page through; the rest are skipped and ${dropped === 1 ? "its watermark" : "their watermarks"} moved on.`);
     const partial = this.summary.partialVideos;
     if (partial > 0) this.note(`TikTok served no data for ${partial} video page${partial === 1 ? "" : "s"}; their counts are the grid's rounded views until a later pass reads them.`);
     const sources: Record<string, SourceState> = {};
@@ -784,7 +982,7 @@ class Pass {
       sources,
       videos,
       followers,
-      seen: this.seenOrder.slice(-MAX_SEEN),
+      seen: [...this.seen].slice(-MAX_SEEN),
       lastPass: {
         at: this.at,
         finishedAt: this.now(),
@@ -849,6 +1047,25 @@ class Pass {
   private checkStop(): void {
     if (this.deps.shouldStop?.()) throw new StopRequested("stopped");
   }
+}
+
+/** waited orders two waits, the longer first; no wait goes last. */
+function waited(left: number | undefined, right: number | undefined): number {
+  return (left ?? Number.MAX_SAFE_INTEGER) - (right ?? Number.MAX_SAFE_INTEGER);
+}
+
+/** commentFields takes a watch's comment fields, leaving out unset ones. */
+function commentFields(watch: CommentFields | undefined): CommentFields {
+  const fields: CommentFields = {};
+  if (!watch) return fields;
+  for (const key of COMMENT_FIELDS) {
+    if (watch[key] !== undefined) Object.assign(fields, { [key]: watch[key] });
+  }
+  return fields;
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 /** newest takes a grid's newest videos by when they were posted, read from

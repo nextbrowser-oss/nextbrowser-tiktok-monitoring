@@ -31,11 +31,33 @@ TikTok's web app signs its call for a video's comments with values its own scrip
 
 When that happens the pass skips comments for the rest of the pass, keeps every comment watermark where it was, and notes it. New videos, counts, followers and engagement are still read. The next pass tries again, and anything that was missed is read once TikTok answers.
 
+An empty list from one video is not taken for a refusal: that video is skipped alone (see below). Empty lists from two videos in the same pass are.
+
 If it happens on every pass:
 
 - comments on your videos and under the creators' are not being read at all. Check the `comments_refused` log entries: `status` and `refused` say what TikTok answered;
 - signing the profile in to tiktok.com sometimes changes the answer;
 - `--no-comments` turns the lists off, and the note with them, while the rest of the monitoring goes on.
+
+## "TikTok's comment list for N videos came back empty 3 passes in a row"
+
+The video's comment count grew, but its list came back with no comments, three passes running. That is a video with comments turned off, or with new comments held for review: TikTok counts them but does not list them. Each of those passes skipped only that video and read the others. The watermark has now moved to the count, so the video is not asked for again until more comments arrive. The `comments_empty` log entries name the video.
+
+If every video's list comes back empty, that is TikTok's refusal instead, and the pass says so (above).
+
+## "N busy videos have more new comments than one pass reads"
+
+TikTok ranks a video's comments rather than listing them newest first, so on a busy video a new comment can sit pages below the top. The pass pages through a list until it has found the comments written since the last look, but gives one video at most 3 pages a pass. A video that needs more keeps its old watermark, and the next pass goes on from where this one stopped. Nothing is lost; it is announced a pass later.
+
+Lowering `--max-comment-reads` makes this more likely, since every page counts against it.
+
+## "N busy videos had more new comments than 3 passes could page through"
+
+A busy video's backlog was still not accounted for after 3 passes of paging. The pass gave up on the rest and moved its watermark on, so the list is not paged on every pass for good. Comments it did page through were announced. It happens on videos with thousands of comments, or with comments held for review; the `comments_backlog_dropped` log entry names the video.
+
+## "The pass failed: …"
+
+The pass ended on something unexpected rather than on anything TikTok did: the browser tab closed, CDP stopped answering, nbc returned something the monitor did not expect, or a bug. The summary's `failed` holds the error, and `tiktok-monitor once` exits with code 1. What was considered before the failure is kept; comments read from the creator it was in the middle of keep their old watermarks and are read again next pass. Run with `--verbose` and look at the `pass_error` log entry; if it repeats, open an issue with it.
 
 ## "TikTok drew no video grid for @name"
 
@@ -66,7 +88,8 @@ Keywords match whole words only: "acme" does not match "#acmeshop". Add the form
 ## A new comment was not reported
 
 - The video is not among the newest `--own-videos` or `--videos-per-creator`. Raise the number.
-- The comment list is read one page deep, in TikTok's own order. On a busy video a new comment may not be on that page.
+- On a busy video, the new comment was more than 3 pages down TikTok's ranked list: it is read on a later pass (see "busy videos" above), unless the pass gave up on that video's backlog.
+- The video's list came back empty while its count grew: comments held for review are counted but not listed.
 - Under a creator's video, a comment is reported only when it names a keyword or your handle.
 - The comment is older than `--max-age`.
 

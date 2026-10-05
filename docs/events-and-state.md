@@ -118,10 +118,13 @@ TikTok put its captcha in front of the profile, and the pass stopped. Nothing mo
 | `newItems`, `urgent` | New matches, and how many of them are *high*. |
 | `videoReads`, `partialVideos` | Video pages fetched, and those that served no data, whose counts came from the grid. |
 | `commentReads`, `commentReadsDeferred` | Comment lists read, and lists that grew but wait for the next pass (`maxCommentReads`). |
-| `commentsRefused` | TikTok would not answer a comment list without its signature; comments were skipped for the rest of the pass. |
+| `commentPages` | Comment pages asked for. A busy video's list takes more than one; `maxCommentReads` counts these. |
+| `commentReadsUnfinished` | Busy videos whose new comments were not all found in the pages this pass could spend; the next pass goes on from there. |
+| `commentsRefused` | TikTok would not answer a comment list without its signature, or two videos' lists came back empty; comments were skipped for the rest of the pass. |
 | `followerChecks`, `followerChanges` | Follower counts read, and those that changed. |
 | `engagementChanges` | `engagement_changed` events emitted. |
 | `stopped` | `shouldStop` ended the pass early. |
+| `failed` | Set only when the pass ended on something unexpected (a browser or CDP error, a bug): the error, as written. The notes say so too. |
 | `notes` | Up to five sentences a person can read. |
 
 ## The state document
@@ -157,7 +160,11 @@ TikTok put its captcha in front of the profile, and the pass stopped. Nothing mo
 ```
 
 - `sources[*].since` is the source's starting line: nothing created before it is announced. `filter` is what the source was read with; a different keyword set starts a new line.
-- `videos` holds the watched videos, keyed by id, up to 300. `commentsRead` is the comment watermark: a count above it means the list is read again. `approximate` marks views taken from the grid. `history` keeps the last 48 view readings that changed.
+- `videos` holds the watched videos, keyed by id, up to 300. `commentsRead` is the comment watermark: a count above it means the list is read again. `commentsReadAt` is when it was taken: comments written after it are what the count grew by. `approximate` marks views taken from the grid. `history` keeps the last 48 view readings that changed. Three fields appear only while a video's comments are behind:
+  - `commentsBacklog` (`cursor`, `target`, `found`, `at`, `passes`): a busy video's list ran out of pages before it accounted for the growth; the next pass goes on from `cursor`, and the watermark moves to `target` once it is done.
+  - `commentsEmpty`: passes in a row its list came back empty while the count grew. At 3 the watermark moves on.
+  - `commentsDueAt`: when its new comments first had to wait for a later pass. The longest-waiting are read first.
+- `seen` is ordered oldest first, and an item seen again moves to the end, so an item still on show is not the first one cut.
 - `followers[*].history` records every change, capped at the latest 200. It is enough to draw a chart without a separate store.
 
 Pass anything read from storage through `normalizeState`. It accepts older versions, hand edits, and missing fields, and fills in defaults.
@@ -176,7 +183,7 @@ Settings live in `state.settings`. `normalizeState` and `withSettings` clamp the
 | `watchComments` | `true` | Read comment lists at all: under your videos, and under the creators' for keywords and mentions of you. |
 | `ownVideos` | `6` | 0–12 of your newest videos watched. |
 | `videosPerCreator` | `3` | 0–10 of each creator's newest videos opened for counts and comments. |
-| `maxCommentReads` | `10` | 0–30 comment lists one pass may read. |
+| `maxCommentReads` | `10` | 0–30 comment pages one pass may ask for, across every video. A list's first page is one; a busy video's later pages (up to 3 a pass) count too. |
 | `trackEngagement` | `true` | Emit `engagement_changed`. |
 | `engagement.viewsRatio`, `engagement.viewsMin` | `0.5`, `1000` | A views jump: at least this share of the last reading (0.1–10) and this many (at least 100). |
 | `engagement.likesRatio`, `engagement.likesMin` | `0.5`, `500` | A likes jump: the same, at least 10. |

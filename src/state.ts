@@ -44,8 +44,9 @@ export interface MonitorSettings {
   /** How many of each creator's newest videos are opened for their counts
    *  and comments. */
   videosPerCreator: number;
-  /** How many comment lists one pass may read. A video whose comment count
-   *  grew past this is read on the next pass instead. */
+  /** How many comment pages one pass may ask for, across every video; a
+   *  busy video's later pages count too. A video past this is read on the
+   *  next pass instead, before the ones that did not wait. */
   maxCommentReads: number;
   /** Report engagement_changed when a watched video's counts jump. */
   trackEngagement: boolean;
@@ -84,6 +85,24 @@ export interface CountSample {
   value: number;
 }
 
+/** A comment read that ran out of pages — the per-video cap, or the pass's
+ *  maxCommentReads — before it had found everything the count grew by. The
+ *  watermark stays where it was and the next pass goes on from here. */
+export interface CommentBacklog {
+  /** Where the next pass picks the list up. */
+  cursor: number;
+  /** The comment count this read accounts for: the watermark moves to it
+   *  once the read is done. */
+  target: number;
+  /** Comments newer than the watermark found so far. */
+  found: number;
+  /** When the read began, which becomes the watermark's time once it is
+   *  done. */
+  at: number;
+  /** Passes spent on it so far. */
+  passes: number;
+}
+
 /** What the monitor last knew about one video: its counts, to tell an
  *  engagement jump, and its comment watermark, to tell when its comments are
  *  worth reading again. */
@@ -101,6 +120,18 @@ export interface VideoWatch {
    *  seen. A count above it means there is something new to read. Unknown
    *  until the video's page has served its counts once. */
   commentsRead?: number;
+  /** When the watermark was taken: comments written after it are what the
+   *  count grew by. */
+  commentsReadAt?: number;
+  /** A read of a busy video's list that the next pass goes on with. */
+  commentsBacklog?: CommentBacklog;
+  /** Passes in a row the list came back empty while the count said there
+   *  were new comments: comments turned off, or held for review. */
+  commentsEmpty?: number;
+  /** When its new comments first had to wait for a later pass
+   *  (maxCommentReads, or a backlog). The pass reads the creator and the
+   *  video that have waited longest first. */
+  commentsDueAt?: number;
   checkedAt: number;
   /** Views over time, a sample per change, bounded. */
   history: CountSample[];
@@ -159,6 +190,12 @@ export const MAX_VIDEOS_WATCHED = 300;
 export const MAX_HISTORY = 200;
 export const MAX_VIDEO_HISTORY = 48;
 export const MAX_PASS_NOTES = 5;
+/** How deep one pass pages into one video's comment list. */
+export const MAX_COMMENT_PAGES = 3;
+/** How many passes a video's comment watermark is held for an answer that
+ *  does not account for its count — an empty list, or a backlog — before it
+ *  is moved on with a note. */
+export const MAX_HELD_PASSES = 3;
 
 /** TikTok usernames: letters, digits, underscores and periods, never ending
  *  with a period. TikTok caps new ones at 24 characters; older accounts are
@@ -274,6 +311,21 @@ function optional<K extends string, V>(key: K, value: V | undefined): { [P in K]
   return (value === undefined ? {} : { [key]: value }) as { [P in K]?: V };
 }
 
+function count(value: unknown): number | undefined {
+  const number = finite(value);
+  return number !== undefined && number >= 0 ? Math.floor(number) : undefined;
+}
+
+function backlog(raw: unknown): CommentBacklog | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const record = raw as Partial<CommentBacklog>;
+  const cursor = count(record.cursor);
+  const target = count(record.target);
+  const at = finite(record.at);
+  if (cursor === undefined || target === undefined || at === undefined) return undefined;
+  return { cursor, target, found: count(record.found) ?? 0, at, passes: count(record.passes) ?? 0 };
+}
+
 function history(raw: unknown, max: number): CountSample[] {
   return Array.isArray(raw)
     ? raw
@@ -326,6 +378,10 @@ export function normalizeState(raw: unknown): MonitorState {
       ...optional("saves", finite(value.saves)),
       ...(value.approximate === true ? { approximate: true } : {}),
       ...optional("commentsRead", finite(value.commentsRead)),
+      ...optional("commentsReadAt", finite(value.commentsReadAt)),
+      ...optional("commentsBacklog", backlog(value.commentsBacklog)),
+      ...optional("commentsEmpty", count(value.commentsEmpty) || undefined),
+      ...optional("commentsDueAt", finite(value.commentsDueAt)),
       checkedAt: finite(value.checkedAt) ?? 0,
       history: history(value.history, MAX_VIDEO_HISTORY),
     };

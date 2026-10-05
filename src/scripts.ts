@@ -184,6 +184,10 @@ export interface CommentsSnapshot extends FetchMeta {
   comments: RawComment[];
   /** The video's comment count, as the list reports it. */
   total: number | null;
+  /** Where the next page starts, as the list reports it. */
+  cursor: number | null;
+  /** The list goes on past this page. */
+  has_more: boolean;
 }
 
 /** Helpers every script shares. Ids of 16 digits or more are quoted before
@@ -405,18 +409,19 @@ export function videoScript(handle: string, id: string): string {
 })()`;
 }
 
-/** commentsScript asks for the first page of a video's comments, the call the
- *  web app makes when its comment panel opens. The web app signs that call;
+/** commentsScript asks for one page of a video's comments, the call the web
+ *  app makes when its comment panel opens (cursor 0) and as it is scrolled
+ *  (the cursor the last page returned). The web app signs that call;
  *  this one goes out plain, with the profile's cookies. On a page where
  *  TikTok's web app is running (the monitor reads comments from a creator's
  *  page) its own scripts may sign it on the way out; when nothing does,
  *  TikTok is known to answer with nothing at all or with a non-zero
  *  status_code, which the script reports as `unsigned` rather than as a
  *  failure. TikTok orders this list by its own ranking, not by time. */
-export function commentsScript(id: string): string {
+export function commentsScript(id: string, cursor = 0): string {
   return String.raw`(async () => {${PAGE_HELPER}${REQUEST_HELPER}
-  const got = await request(${jsLiteral(commentsPath(id))}, "json");
-  const out = Object.assign({ unsigned: false, comments: [], total: null }, got.meta);
+  const got = await request(${jsLiteral(commentsPath(id, cursor))}, "json");
+  const out = Object.assign({ unsigned: false, comments: [], total: null, cursor: null, has_more: false }, got.meta);
   if (out.error || out.captcha || out.throttled) return out;
   const body = /^\s*[\[{]/.test(got.text) ? parseJson(got.text) : null;
   if (!body || typeof body !== "object") {
@@ -441,6 +446,8 @@ export function commentsScript(id: string): string {
     return out;
   }
   out.total = num(body.total);
+  out.cursor = num(body.cursor);
+  out.has_more = body.has_more === 1 || body.has_more === true;
   out.comments = (Array.isArray(body.comments) ? body.comments : []).map((c) => (c && typeof c === "object" ? {
     cid: idOf(c.cid),
     text: str(c.text, ${TEXT_MAX}),
@@ -461,9 +468,10 @@ export function videoPath(handle: string, id: string): string {
 }
 
 /** aid=1988 is the id TikTok's web app sends for itself; count=20 is the page
- *  the comment panel asks for first. */
-export function commentsPath(id: string): string {
-  return `/api/comment/list/?aweme_id=${videoId(id)}&count=20&cursor=0&aid=1988`;
+ *  the comment panel asks for, and cursor is how far into the list it is. */
+export function commentsPath(id: string, cursor = 0): string {
+  const from = Number.isSafeInteger(cursor) && cursor > 0 ? cursor : 0;
+  return `/api/comment/list/?aweme_id=${videoId(id)}&count=20&cursor=${from}&aid=1988`;
 }
 
 /** Every script with a label, for the tests that make sure each one is at

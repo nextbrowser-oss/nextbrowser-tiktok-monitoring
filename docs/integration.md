@@ -72,6 +72,7 @@ Each match carries its `triage.reasons`. Show them: they are what makes a *high*
 | `commentsRefused` | "Comments were skipped this pass." New videos and counts are still current. |
 | `loginRequired` | "Sign in to tiktok.com to watch your own videos." The creators are still read. |
 | `partialVideos` | Nothing urgent: some counts are rounded until a later pass. |
+| `failed` | "The last pass failed": something other than TikTok went wrong, such as a closed tab. Its text is in the notes. |
 
 ### From a match to a reply
 

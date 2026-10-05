@@ -37,7 +37,7 @@ After `npm link`, or when the package is installed with its bin, the same comman
 | `--interval 30m` | 30 min | Time between passes. Minimum 10 min, spread ±20%. |
 | `--own-videos 6` | 6 | Your newest videos watched, 0–12. |
 | `--videos-per-creator 3` | 3 | Each creator's newest videos opened for counts and comments, 0–10. |
-| `--max-comment-reads 10` | 10 | Comment lists one pass may read, 0–30. |
+| `--max-comment-reads 10` | 10 | Comment pages one pass may ask for, 0–30. A busy video's list can take up to 3. |
 | `--views-jump 1000` | 1,000 | Views a video must gain, and +50%, to count as a jump. |
 | `--likes-jump 500` | 500 | Likes a video must gain, and +50%, to count as a jump. |
 | `--comments-jump 20` | 20 | Comments a video must gain to count as a jump. |
@@ -97,7 +97,7 @@ In `json` format, stdout carries one object per line:
 | Code | Meaning |
 | --- | --- |
 | `0` | Finished, or stopped with <kbd>Ctrl</kbd>+<kbd>C</kbd>. |
-| `1` | An error, such as a profile that would not start under `once`, or a bad flag. |
+| `1` | An error, such as a profile that would not start under `once`, a bad flag, or a `once` pass that ended on an unexpected error (`summary.failed`). |
 | `2` | No command, or an unknown one. Usage is printed. |
 | `3` | `once` found the profile signed out while `--own` is on. The creators were still read. |
 | `4` | `once` was rate-limited, refused, or could not reach tiktok.com. |

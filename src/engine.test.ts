@@ -3,7 +3,7 @@ import { checkAccount, runPass, type PassDeps, type PassResult } from "./engine.
 import type { EngagementChangedEvent, MonitorEvent, NewItemEvent } from "./events.js";
 import { creatorUrl, videoUrl } from "./ids.js";
 import { LANDING_URL, SIGN_IN_URL } from "./scripts.js";
-import { emptyState, withSettings, type MonitorSettings, type MonitorState } from "./state.js";
+import { MAX_SEEN, emptyState, normalizeState, withSettings, type MonitorSettings, type MonitorState } from "./state.js";
 import { FakeTikTok, NOON, comment, video, type FakeVideo } from "./testing/fakeBrowser.js";
 
 const MINUTE = 60_000;
@@ -252,13 +252,195 @@ describe("comments on the account's videos", () => {
     expect(texts(back.events).sort()).toEqual(["is this back in stock?", "price?"]);
   });
 
-  it("treats an empty first page for a video with comments as the same refusal", async () => {
+  it("skips only the video whose list comes back empty, and reads the others", async () => {
+    const first = await pass(watching());
+    const minute = later();
+    // Comments turned off or held for review: counted, never listed. The
+    // account's own video is read first on every pass.
+    mine.comments = 5;
+    grow(theirs, comment("shopper", minute, "acme does this cheaper"));
+    const { events, summary, state } = await pass(first.state);
+    expect(summary.commentsRefused).toBe(false);
+    expect(tt.listsRead).toEqual([mine.id, theirs.id]);
+    expect(texts(events)).toEqual(["acme does this cheaper"]);
+    expect(state.videos[mine.id]).toMatchObject({ commentsRead: 2, commentsEmpty: 1 });
+  });
+
+  it("moves an empty list's watermark on after three passes, and says why", async () => {
+    let result = await pass(watching({ creators: [] }));
+    mine.comments = 5;
+    for (let round = 1; round <= 3; round += 1) {
+      later();
+      result = await pass(result.state);
+    }
+    expect(tt.listsRead).toEqual([mine.id, mine.id, mine.id]);
+    expect(result.summary.notes).toContain("TikTok's comment list for 1 video came back empty 3 passes in a row (comments off, or held for review); its watermark moved on so it is not asked for again until more comments arrive.");
+    expect(result.state.videos[mine.id]).toMatchObject({ commentsRead: 5 });
+    expect(result.state.videos[mine.id]!.commentsEmpty).toBeUndefined();
+    later();
+    await pass(result.state);
+    expect(tt.listsRead).toHaveLength(3);
+  });
+
+  it("takes empty lists from two videos in one pass for TikTok's refusal", async () => {
+    const older = video("acme", 5, "Older drop", { comments: 1 });
+    tt.creators.acme!.videos = [mine, older];
     const first = await pass(watching());
     later();
     mine.comments = 5;
+    older.comments = 3;
+    grow(theirs, comment("shopper", 70, "acme does this cheaper"));
     const { summary, state } = await pass(first.state);
     expect(summary.commentsRefused).toBe(true);
-    expect(state.videos[mine.id]!.commentsRead).toBe(2);
+    expect(tt.listsRead).toEqual([mine.id, older.id]);
+    // A refusal is no evidence about either video: neither is counted empty.
+    expect(state.videos[mine.id]!.commentsEmpty).toBeUndefined();
+    expect(state.videos[older.id]!.commentsEmpty).toBeUndefined();
+  });
+
+  it("reads the threads that have waited longest first, so a busy video cannot starve a creator", async () => {
+    const first = await pass(watching({ maxCommentReads: 1 }));
+    let minute = later();
+    grow(mine, comment("a", minute, "first"));
+    grow(theirs, comment("shopper", minute, "acme is cheaper"));
+    const second = await pass(first.state);
+    expect(texts(second.events)).toEqual(["first"]);
+    expect(second.state.videos[theirs.id]!.commentsDueAt).toBe(second.state.lastPass!.at);
+
+    minute = later();
+    grow(mine, comment("b", minute, "second"));
+    const third = await pass(second.state);
+    expect(texts(third.events)).toEqual(["acme is cheaper"]);
+    expect(tt.opened.slice(-3)).toEqual([creatorUrl("rival"), creatorUrl("acme"), "about:blank"]);
+
+    later();
+    const fourth = await pass(third.state);
+    expect(texts(fourth.events)).toEqual(["second"]);
+  });
+});
+
+describe("busy videos", () => {
+  /** busy gives a video `count` older comments, all written before monitoring
+   *  started, which TikTok ranks above anything new. */
+  function busy(target: FakeVideo, count: number): void {
+    tt.comments[target.id] = Array.from({ length: count }, (_, index) => comment(`old${index}`, 1, `old ${index}`));
+    target.comments = count;
+  }
+
+  /** lateComment adds a comment TikTok ranks last, as it does a new one with
+   *  no likes under a video with many. */
+  function lateComment(target: FakeVideo, minute: number, text: string): void {
+    tt.comments[target.id]!.push(comment("late", minute, text));
+    target.comments = (target.comments ?? 0) + 1;
+  }
+
+  it("pages past the first 20 until the new comments are accounted for", async () => {
+    busy(mine, 50);
+    const first = await pass(watching({ creators: [] }));
+    lateComment(mine, later(), "does this come in blue?");
+    const { events, summary, state } = await pass(first.state);
+    expect(tt.pagesRead).toEqual([`${mine.id}@0`, `${mine.id}@20`, `${mine.id}@40`]);
+    expect(texts(events)).toEqual(["does this come in blue?"]);
+    expect(summary).toMatchObject({ commentReads: 1, commentPages: 3, commentReadsUnfinished: 0 });
+    expect(state.videos[mine.id]!.commentsRead).toBe(51);
+  });
+
+  it("stops at three pages, keeps the watermark, and goes on from there next pass", async () => {
+    busy(mine, 100);
+    const first = await pass(watching({ creators: [] }));
+    lateComment(mine, later(), "does this come in blue?");
+    const cut = await pass(first.state);
+    expect(fresh(cut.events)).toHaveLength(0);
+    expect(cut.summary.commentReadsUnfinished).toBe(1);
+    expect(cut.summary.notes).toContain("1 busy video has more new comments than one pass reads; the next pass goes on from where this one stopped.");
+    expect(cut.state.videos[mine.id]).toMatchObject({ commentsRead: 100, commentsBacklog: { cursor: 60, target: 101, passes: 1 } });
+    // The backlog survives the trip through the state file.
+    expect(normalizeState(JSON.parse(JSON.stringify(cut.state))).videos[mine.id]).toEqual(cut.state.videos[mine.id]);
+
+    later();
+    const next = await pass(cut.state);
+    expect(tt.pagesRead.slice(3)).toEqual([`${mine.id}@60`, `${mine.id}@80`, `${mine.id}@100`]);
+    expect(texts(next.events)).toEqual(["does this come in blue?"]);
+    expect(next.state.videos[mine.id]!.commentsRead).toBe(101);
+    expect(next.state.videos[mine.id]!.commentsBacklog).toBeUndefined();
+  });
+
+  it("counts every page against maxCommentReads", async () => {
+    busy(mine, 50);
+    const first = await pass(watching({ creators: [], maxCommentReads: 2 }));
+    lateComment(mine, later(), "does this come in blue?");
+    const cut = await pass(first.state);
+    expect(tt.pagesRead).toEqual([`${mine.id}@0`, `${mine.id}@20`]);
+    expect(cut.state.videos[mine.id]!.commentsBacklog).toMatchObject({ cursor: 40 });
+    later();
+    const next = await pass(cut.state);
+    expect(texts(next.events)).toEqual(["does this come in blue?"]);
+  });
+
+  it("gives up on a backlog after three passes, and says so", async () => {
+    busy(mine, 200);
+    let result = await pass(watching({ creators: [] }));
+    // Counted, but never listed: a comment held for review.
+    mine.comments = 201;
+    for (let round = 1; round <= 3; round += 1) {
+      later();
+      result = await pass(result.state);
+    }
+    expect(tt.pagesRead).toHaveLength(9);
+    expect(result.summary.notes).toContain("1 busy video had more new comments than 3 passes could page through; the rest are skipped and its watermark moved on.");
+    expect(result.state.videos[mine.id]!.commentsRead).toBe(201);
+    expect(result.state.videos[mine.id]!.commentsBacklog).toBeUndefined();
+  });
+});
+
+describe("a pass cut short", () => {
+  it("keeps the watermark of comments it read but had not announced yet", async () => {
+    const older = video("acme", 5, "Older drop", { comments: 1 });
+    tt.creators.acme!.videos = [mine, older];
+    const first = await pass(watching({ creators: [] }));
+    const minute = later();
+    grow(mine, comment("buyer", minute, "hello there"));
+    grow(older, comment("b", minute, "second"));
+    tt.throttle = `comments ${older.id}`;
+    const cut = await pass(first.state);
+    expect(cut.summary.rateLimited).toBe(true);
+    expect(fresh(cut.events)).toHaveLength(0);
+    expect(cut.state.videos[mine.id]!.commentsRead).toBe(2);
+
+    tt.throttle = "";
+    later();
+    const next = await pass(cut.state);
+    expect(texts(next.events).sort()).toEqual(["hello there", "second"]);
+  });
+
+  it("keeps it on Stop too", async () => {
+    const older = video("acme", 5, "Older drop", { comments: 1 });
+    tt.creators.acme!.videos = [mine, older];
+    const first = await pass(watching({ creators: [] }));
+    const minute = later();
+    grow(mine, comment("buyer", minute, "hello there"));
+    grow(older, comment("b", minute, "second"));
+    // Stop lands after the first list is read, before the second is asked for.
+    const stopped = await pass(first.state, { shouldStop: () => tt.labels.includes(`comments ${mine.id}`) });
+    expect(stopped.summary.stopped).toBe(true);
+    expect(tt.listsRead).toEqual([mine.id]);
+    expect(stopped.state.videos[mine.id]!.commentsRead).toBe(2);
+    later();
+    const next = await pass(stopped.state);
+    expect(texts(next.events).sort()).toEqual(["hello there", "second"]);
+  });
+
+  it("says when the pass failed on something unexpected", async () => {
+    const first = await pass(watching());
+    const evaluate = tt.evaluate.bind(tt);
+    tt.evaluate = (async (script: string, label = "") => {
+      if (label === "profile @rival") throw new Error("Target closed");
+      return evaluate(script, label);
+    }) as FakeTikTok["evaluate"];
+    later();
+    const { summary } = await pass(first.state);
+    expect(summary.failed).toBe("Target closed");
+    expect(summary.notes).toContain("The pass failed: Target closed");
   });
 });
 
@@ -389,6 +571,30 @@ describe("degraded states", () => {
     expect(types(events)).toEqual(["account_changed"]);
     expect(state.videos[mine.id]).toBeUndefined();
     expect(state.account).toMatchObject({ handle: "other_brand", signedIn: true });
+  });
+});
+
+describe("the seen list", () => {
+  it("keeps an item that is still on show, however many arrive after it", async () => {
+    const first = await pass(watching());
+    let minute = later();
+    const launch = video("rival", minute, "Big launch today");
+    tt.creators.rival!.videos = [launch, theirs];
+    const second = await pass(first.state);
+    expect(texts(second.events)).toEqual(["Big launch today"]);
+
+    // The launch is the oldest key in a full list, and still on the grid.
+    const full: MonitorState = { ...second.state, seen: [`video:${launch.id}`, ...Array.from({ length: MAX_SEEN - 1 }, (_, index) => `comment:filler${index}`)] };
+    minute = later();
+    const next = video("rival", minute, "Next drop");
+    tt.creators.rival!.videos = [next, launch, theirs];
+    const third = await pass(full);
+    expect(texts(third.events)).toEqual(["Next drop"]);
+    expect(third.state.seen).toHaveLength(MAX_SEEN);
+
+    later();
+    const fourth = await pass(third.state);
+    expect(texts(fourth.events)).toEqual([]);
   });
 });
 

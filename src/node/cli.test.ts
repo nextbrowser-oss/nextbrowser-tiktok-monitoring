@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PassSummary } from "../engine.js";
 import { emptyState } from "../state.js";
-import { describeEvent, describePass, parseDuration, settingsFromFlags } from "./cli.js";
+import { describeEvent, describePass, exitCode, parseDuration, settingsFromFlags } from "./cli.js";
 import { loadState, saveState } from "./store.js";
 
 describe("parseDuration", () => {
@@ -80,7 +80,7 @@ describe("describePass", () => {
   const summary: PassSummary = {
     signedIn: true, handle: "acme", loginRequired: false, securityCheck: false, rateLimited: false, requests: 8, pageLoads: 2, sourcesRead: 3,
     baselines: 0, itemsRead: 40, matches: 6, newItems: 2, urgent: 1, videoReads: 5, partialVideos: 0, commentReads: 2, commentReadsDeferred: 0,
-    commentsRefused: false, followerChecks: 2, followerChanges: 1, engagementChanges: 0, stopped: false, notes: [],
+    commentPages: 3, commentReadsUnfinished: 0, commentsRefused: false, followerChecks: 2, followerChanges: 1, engagementChanges: 0, stopped: false, notes: [],
   };
 
   it("sums a pass up in one line", () => {
@@ -91,6 +91,21 @@ describe("describePass", () => {
   it("says what stopped it", () => {
     const line = describePass({ ...summary, sourcesRead: 0, videoReads: 0, commentReads: 0, followerChecks: 0, securityCheck: true, notes: ["Solve it."] }, new Date(2026, 9, 5, 9, 0).getTime());
     expect(line).toBe("09:00  pass @acme: captcha\n        Solve it.");
+    expect(describePass({ ...summary, sourcesRead: 0, videoReads: 0, commentReads: 0, followerChecks: 0, failed: "Target closed" }, new Date(2026, 9, 5, 9, 0).getTime()))
+      .toBe("09:00  pass @acme: failed");
+  });
+});
+
+describe("exitCode", () => {
+  const summary = { signedIn: true, loginRequired: false, securityCheck: false, rateLimited: false } as PassSummary;
+
+  it("fails a once whose pass ended on an unexpected error", () => {
+    expect(exitCode(summary)).toBe(0);
+    expect(exitCode({ ...summary, failed: "Target closed" })).toBe(1);
+    expect(exitCode({ ...summary, failed: "Target closed", loginRequired: true })).toBe(1);
+    expect(exitCode({ ...summary, loginRequired: true })).toBe(3);
+    expect(exitCode({ ...summary, rateLimited: true, blocked: "429" })).toBe(4);
+    expect(exitCode({ ...summary, securityCheck: true, blocked: "captcha" })).toBe(5);
   });
 });
 

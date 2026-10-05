@@ -39,7 +39,7 @@ How much:
   --interval 30m           between passes (min 10m, spread ±20%)
   --own-videos 6           your newest videos watched (0-12)
   --videos-per-creator 3   each creator's newest videos opened for counts and comments (0-10)
-  --max-comment-reads 10   comment lists one pass may read (0-30)
+  --max-comment-reads 10   comment pages one pass may ask for (0-30)
   --views-jump 1000        views a video must gain (and +50%) to count as a jump
   --likes-jump 500         likes a video must gain (and +50%) to count as a jump
   --comments-jump 20       comments a video must gain to count as a jump
@@ -232,9 +232,21 @@ export function describePass(summary: PassSummary, at: number): string {
   if (summary.securityCheck) parts.push("captcha");
   else if (summary.rateLimited) parts.push("rate-limited");
   else if (summary.blocked) parts.push("refused");
+  if (summary.failed) parts.push("failed");
   if (summary.stopped) parts.push("stopped");
   const who = summary.handle ? ` @${summary.handle}` : "";
   return `${time(at)}  pass${who}: ${parts.join("; ") || "nothing read"}${summary.notes.length ? `\n        ${summary.notes.join("\n        ")}` : ""}`;
+}
+
+/** exitCode is what `once` exits with after its pass. A pass that ended on
+ *  an unexpected error says so only in its notes and `failed`, so without the
+ *  flag a script running `once` would take it for a pass that worked. */
+export function exitCode(summary: PassSummary): number {
+  if (summary.securityCheck) return 5;
+  if (summary.blocked || summary.rateLimited) return 4;
+  if (summary.failed) return 1;
+  if (summary.loginRequired) return 3;
+  return 0;
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -314,7 +326,7 @@ export async function main(argv: string[]): Promise<number> {
     const at = state.lastPass?.at ?? Date.now();
     print(format === "json" ? JSON.stringify({ type: "pass", at, summary: result.summary }) : describePass(result.summary, at));
     const backOff = !!result.summary.blocked || result.summary.rateLimited || result.summary.securityCheck;
-    if (command === "once" || stopping) return result.summary.securityCheck ? 5 : backOff ? 4 : result.summary.loginRequired ? 3 : 0;
+    if (command === "once" || stopping) return exitCode(result.summary);
     await wait(scheduleDelay(intervalMs, { backOff }));
     if (stopping) return 0;
   }

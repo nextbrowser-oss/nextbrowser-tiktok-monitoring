@@ -262,8 +262,16 @@ describe("commentsScript", () => {
     const snapshot = await run<CommentsSnapshot>(commentsScript("7423156789012345678"));
     expect(asked[0]).toMatchObject({ path: commentsPath("7423156789012345678"), init: { credentials: "include" } });
     expect(asked[0]!.path).toBe("/api/comment/list/?aweme_id=7423156789012345678&count=20&cursor=0&aid=1988");
-    expect(snapshot).toMatchObject({ ok: true, unsigned: false, total: 89 });
+    expect(snapshot).toMatchObject({ ok: true, unsigned: false, total: 89, cursor: 20, has_more: true });
     expect(snapshot.comments).toEqual([{ cid: "7423999999999999991", text: "does it ship to Canada?", create_time: 1790935500, likes: 3, replies: 0, user: "buyer", nickname: "Buyer" }]);
+  });
+
+  it("asks for a later page by its cursor, and knows the last one", async () => {
+    page("https://www.tiktok.com/@rival");
+    const asked = answer({ body: `{"status_code":0,"total":45,"cursor":45,"has_more":0,"comments":[]}` });
+    const snapshot = await run<CommentsSnapshot>(commentsScript("7423156789012345678", 40));
+    expect(asked[0]!.path).toBe("/api/comment/list/?aweme_id=7423156789012345678&count=20&cursor=40&aid=1988");
+    expect(snapshot).toMatchObject({ ok: true, cursor: 45, has_more: false, comments: [] });
   });
 
   it("reports an unsigned call as refused, not failed: an empty answer, a page, or a non-zero status", async () => {

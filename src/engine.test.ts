@@ -161,6 +161,23 @@ describe("watched creators", () => {
     expect(state.videos[teaser.id]!.commentsRead).toBeUndefined();
   });
 
+  it("learns the account from a creator's page when the home page hides it behind \"Please wait...\"", async () => {
+    tt.meHidden = true;
+    const result = await pass(watching());
+    expect(result.summary.signedIn).toBe(true);
+    expect(result.summary.handle).toBe("acme");
+    expect(result.state.account).toMatchObject({ handle: "acme", signedIn: true });
+    expect(types(result.events)).toContain("signed_in");
+    expect(result.summary.notes.join(" ")).not.toContain("did not say who is signed in");
+  });
+
+  it("says so when no page told who is signed in", async () => {
+    tt.meHidden = true;
+    tt.creators.rival = { ...tt.creators.rival!, blank: true };
+    const result = await pass(watching());
+    expect(result.summary.notes).toContain("tiktok.com did not say who is signed in (HTTP 200: Please wait...); public creators are read as usual.");
+  });
+
   it("reads no comments under a creator's videos with neither keywords nor a signed-in account", async () => {
     tt.signedIn = false;
     const first = await pass(watching({ keywords: [] }));

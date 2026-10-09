@@ -6,9 +6,9 @@
 // with webapp.app-context, webapp.user-detail and webapp.video-detail, a
 // creator's grid as the web app draws it, the comment list's JSON, and the
 // ways TikTok answers instead — a captcha, a rate limit, a page without data,
-// an empty answer to an unsigned call. None of these has been captured from a
-// live session yet; they follow the shapes tiktok.com's web app is known to
-// serve, and a live run is still owed.
+// an empty answer to an unsigned call. Most follow the shapes tiktok.com's web
+// app is known to serve; the captcha modal and the "Please wait..." answer to
+// a fetch of "/" were captured from a live signed-in session on 2026-10-09.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -111,6 +111,14 @@ describe("originScript", () => {
     show("https://example.com/", "");
     expect((await run<OriginSnapshot>(originScript())).on_tiktok).toBe(false);
   });
+
+  it("knows the October 2026 captcha modal over a creator page that has its data", async () => {
+    // As captured live on 2026-10-09: a TUXModal over @nike's grid.
+    show("https://www.tiktok.com/@nike", '<div id=":r1:" class="TUXModal captcha-verify-container"><div id="captcha-verify-container-main-page">Drag the slider to fit the puzzle<button id="captcha_slide_button"></button></div></div>',
+      { "webapp.app-context": { user: { uid: "1", uniqueId: "acme" } }, "webapp.user-detail": { statusCode: 0, userInfo: { user: { id: "2", uniqueId: "nike" }, stats: { followerCount: 9300000 } } } });
+    expect((await run<OriginSnapshot>(originScript())).captcha_page).toBe(true);
+    expect((await run<ProfileSnapshot>(profileScript())).captcha).toBe(true);
+  });
 });
 
 describe("meScript", () => {
@@ -128,6 +136,13 @@ describe("meScript", () => {
     expect(await run<MeSnapshot>(meScript())).toMatchObject({ has_data: true, signed_in: false, user: null });
     answer({ status: 403, body: html("<h1>Access Denied</h1>", "Access Denied") });
     expect(await run<MeSnapshot>(meScript())).toMatchObject({ status: 403, has_data: false, signed_in: false, refused: "Access Denied" });
+  });
+
+  it("reads a TikTok page already in the tab instead of fetching the \"Please wait...\" page", async () => {
+    show("https://www.tiktok.com/foryou", "<main></main>", { "webapp.app-context": { user: { uid: "7", uniqueId: "clartt58", nickName: "clartt58" } } });
+    const asked = answer({ body: html("<title>Please wait...</title>", "Please wait...") });
+    expect(await run<MeSnapshot>(meScript())).toMatchObject({ ok: true, has_data: true, signed_in: true, user: { unique_id: "clartt58" } });
+    expect(asked).toHaveLength(0);
   });
 
   it("reads the page the tab shows when asked to", async () => {

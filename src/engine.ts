@@ -52,6 +52,7 @@ import {
   type OriginSnapshot,
   type ProfileSnapshot,
   type RawGridVideo,
+  type RawUser,
   type RawVideo,
   type ReadySnapshot,
   type VideoSnapshot,
@@ -263,6 +264,9 @@ class Pass {
   private readonly excluded: Matcher;
   private readonly urgent: Matcher;
   private handle = "";
+  /** Set when the pass could not read the account up front; what came back
+   *  instead, for the note if no creator's page tells either. */
+  private accountUnread: string | undefined;
   private readonly summary: PassSummary = {
     signedIn: false,
     loginRequired: false,
@@ -317,6 +321,9 @@ class Pass {
       for (const reader of this.readOrder(own)) await this.readCreator(reader.handle, reader.own);
       if (!own && settings.creators.length === 0) {
         this.note("Nothing to watch yet: add creators, or sign the profile in to watch your own videos.");
+      }
+      if (this.accountUnread !== undefined) {
+        this.note(`tiktok.com did not say who is signed in (${this.accountUnread}); public creators are read as usual.`);
       }
       this.completed = true;
     } catch (error) {
@@ -377,8 +384,9 @@ class Pass {
       throw new Blocked(`tiktok.com refused the profile (HTTP ${me.status}${me.refused ? `: ${me.refused}` : ""}). TikTok is not available in every country: check the proxy's country.`);
     }
     if (!me.has_data) {
-      // Neither signed in nor out: the account stays what it was.
-      this.note(`tiktok.com did not say who is signed in (HTTP ${me.status}${me.refused ? `: ${me.refused}` : ""}); public creators are read as usual.`);
+      // Neither signed in nor out: the account stays what it was until a
+      // creator's page, which carries the same block, says otherwise.
+      this.accountUnread = `HTTP ${me.status}${me.refused ? `: ${me.refused}` : ""}`;
       if (previous?.signedIn && previous.handle) {
         this.handle = previous.handle;
         this.summary.signedIn = true;
@@ -386,6 +394,13 @@ class Pass {
       }
       return;
     }
+    this.applyMe(me);
+  }
+
+  /** applyMe records who a page said is signed in: a sign-in, a sign-out or
+   *  another account than before. */
+  private applyMe(me: { signed_in: boolean; user: RawUser | null }): void {
+    const previous = this.state.account;
     if (!me.signed_in || !me.user) {
       if (previous?.signedIn !== false) this.emit({ type: "signed_out", at: this.at, ...(previous?.handle ? { handle: previous.handle } : {}) });
       this.state = {
@@ -469,6 +484,10 @@ class Pass {
 
     const page = await this.openCreator(handle);
     if (page.captcha) throw new SecurityCheck();
+    if (this.accountUnread !== undefined && page.me?.has_data) {
+      this.accountUnread = undefined;
+      this.applyMe(page.me);
+    }
     const code = page.status_code;
     if (code !== null && code >= 10000 && code < 10100) {
       throw new RateLimited(`TikTok is limiting this profile (statusCode ${code} on @${handle}). The pass stopped; the next one waits longer.`);

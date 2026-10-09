@@ -42,8 +42,16 @@ export const LANDING_URL = "https://www.tiktok.com/robots.txt";
 export const SIGN_IN_URL = "https://www.tiktok.com/";
 
 /** What TikTok draws when it wants a person to prove they are one: the slider
- *  or rotate puzzle's container, in either of the two spellings it has used. */
-export const CAPTCHA_SELECTOR = "#captcha-verify-container, .captcha_verify_container";
+ *  or rotate puzzle's container in each spelling it has used. Since October
+ *  2026 it is a TUXModal with the class captcha-verify-container and an id
+ *  that only starts with that name, which the first two no longer matched. */
+export const CAPTCHA_SELECTOR = [
+  "#captcha-verify-container",
+  ".captcha_verify_container",
+  ".captcha-verify-container",
+  '[id^="captcha-verify-container"]',
+  "#captcha_slide_button",
+].join(", ");
 /** One video on a creator's grid. */
 export const GRID_ITEM_SELECTOR = '[data-e2e="user-post-item"]';
 
@@ -167,6 +175,10 @@ export interface ProfileSnapshot {
   hearts: number | null;
   video_count: number | null;
   videos: RawGridVideo[];
+  /** Who the page says is signed in (webapp.app-context): every TikTok page
+   *  carries it, so a pass that could not read the account up front learns it
+   *  here. */
+  me: { has_data: boolean; signed_in: boolean; user: RawUser | null };
 }
 
 export interface VideoSnapshot extends FetchMeta {
@@ -296,9 +308,17 @@ export function meScript(live = false): string {
     scope = rehydrated(document);
     if (captchaIn(document, !!scope)) { meta.captcha = true; meta.ok = false; }
   } else {
-    const got = await request("/", "html");
-    meta = got.meta;
-    scope = readPage(got);
+    // A TikTok page already in the tab carries the block; fetching "/" gets
+    // the "Please wait..." page TikTok serves a request that runs no script.
+    const here = rehydrated(document);
+    if (here && here["webapp.app-context"]) {
+      meta = { path: String(location.pathname || "/"), status: 200, ok: true, refused: "", error: "", reason: "", captcha: false, throttled: false };
+      scope = here;
+    } else {
+      const got = await request("/", "html");
+      meta = got.meta;
+      scope = readPage(got);
+    }
   }
   const context = scope && scope["webapp.app-context"] && typeof scope["webapp.app-context"] === "object" ? scope["webapp.app-context"] : null;
   const out = Object.assign({ has_data: !!context, signed_in: false, user: null }, meta);
@@ -359,6 +379,9 @@ export function profileScript(): string {
     });
   }
   const isPrivate = !!(u && u.privateAccount === true) || status === ${PRIVATE_CODE};
+  const context = scope && scope["webapp.app-context"] && typeof scope["webapp.app-context"] === "object" ? scope["webapp.app-context"] : null;
+  const viewer = context && context.user && typeof context.user === "object" ? context.user : null;
+  const viewerName = viewer ? str(viewer.uniqueId || viewer.unique_id, 40) : "";
   return {
     url: location.href,
     captcha: captchaUrl() || captchaIn(document, !!scope),
@@ -371,7 +394,12 @@ export function profileScript(): string {
     following: num(stats.followingCount),
     hearts: num(stats.heartCount !== undefined ? stats.heartCount : stats.heart),
     video_count: num(stats.videoCount),
-    videos: videos
+    videos: videos,
+    me: {
+      has_data: !!context,
+      signed_in: !!viewerName,
+      user: viewerName ? { uid: idOf(viewer.uid || viewer.id), unique_id: viewerName, nickname: str(viewer.nickName || viewer.nickname, 80) } : null
+    }
   };
 })()`;
 }

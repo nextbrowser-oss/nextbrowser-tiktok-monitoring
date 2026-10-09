@@ -1,6 +1,6 @@
 {
   "name": "@nextbrowser-oss/tiktok-monitoring",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "The open-source TikTok monitoring engine for Nextbrowser: new videos and comments from the creators you watch, comments on your own videos, mentions, keywords and engagement jumps, ranked by urgency, read from a browser profile.",
   "keywords": [

@@ -52,6 +52,9 @@ export class FakeTikTok implements MonitorBrowser {
   /** The comment list answers with nothing, as it does without TikTok's
    *  signature. */
   unsigned = false;
+  /** The account read gets TikTok's "Please wait..." page, as fetching "/"
+   *  without running its script does: no data block, signed in or not. */
+  meHidden = false;
   creators: Record<string, FakeCreator> = {};
   /** Comments by video id, in the order the list returns them. */
   comments: Record<string, RawComment[]> = {};
@@ -118,6 +121,7 @@ export class FakeTikTok implements MonitorBrowser {
     }
     if (label === "me") {
       const meta = this.meta(label);
+      if (this.meHidden) return { ...meta, refused: "Please wait...", has_data: false, signed_in: false, user: null } satisfies MeSnapshot;
       return {
         ...meta,
         has_data: meta.ok,
@@ -135,10 +139,13 @@ export class FakeTikTok implements MonitorBrowser {
       const empty: ProfileSnapshot = {
         url: this.url, captcha: this.captcha, has_data: false, status_code: null, found: false, private: false, user: null,
         followers: null, following: null, hearts: null, video_count: null, videos: [],
+        me: { has_data: false, signed_in: false, user: null },
       };
+      // Every page that carries data carries webapp.app-context too.
+      const me = { has_data: true, signed_in: this.signedIn, user: this.signedIn ? { uid: this.uid, unique_id: this.handle, nickname: "Acme" } : null };
       if (this.captcha || label === this.captchaAt) return { ...empty, captcha: true };
       if (creator?.blank) return empty;
-      if (!creator) return { ...empty, has_data: true, status_code: 10221 } satisfies ProfileSnapshot;
+      if (!creator) return { ...empty, has_data: true, status_code: 10221, me } satisfies ProfileSnapshot;
       const drawn = creator.noGrid || creator.private ? [] : creator.videos;
       return {
         ...empty,
@@ -152,6 +159,7 @@ export class FakeTikTok implements MonitorBrowser {
         hearts: 1000,
         video_count: creator.videos.length,
         videos: drawn.map((video) => ({ id: video.id, author: video.author, pinned: !!video.pinned, views_text: printed(video.views ?? 0), alt: `${video.desc} created by ${video.author}` })),
+        me,
       } satisfies ProfileSnapshot;
     }
     if (label.startsWith("video ")) {

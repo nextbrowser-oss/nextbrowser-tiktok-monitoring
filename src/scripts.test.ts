@@ -19,6 +19,7 @@ import {
   meScript,
   originScript,
   profileScript,
+  creatorHereScript,
   readyScript,
   videoPath,
   videoScript,
@@ -118,6 +119,28 @@ describe("originScript", () => {
       { "webapp.app-context": { user: { uid: "1", uniqueId: "acme" } }, "webapp.user-detail": { statusCode: 0, userInfo: { user: { id: "2", uniqueId: "nike" }, stats: { followerCount: 9300000 } } } });
     expect((await run<OriginSnapshot>(originScript())).captcha_page).toBe(true);
     expect((await run<ProfileSnapshot>(profileScript())).captcha).toBe(true);
+  });
+});
+
+describe("creatorHereScript", () => {
+  const grid = '<div data-e2e="user-post-item"><a href="https://www.tiktok.com/@nike/video/7694398644551748877"></a></div>';
+  const about = (handle: string) => ({ "webapp.user-detail": { statusCode: 0, userInfo: { user: { id: "2", uniqueId: handle }, stats: { followerCount: 1 } } } });
+
+  it("reuses the creator page the tab already shows", async () => {
+    show("https://www.tiktok.com/@nike", grid, about("nike"));
+    expect(await run<{ here: boolean }>(creatorHereScript("Nike"))).toEqual({ here: true });
+  });
+
+  it("reloads after an in-app move, whose data block is still the first creator's", async () => {
+    show("https://www.tiktok.com/@duolingo", grid, about("nike"));
+    expect(await run<{ here: boolean }>(creatorHereScript("duolingo"))).toEqual({ here: false });
+  });
+
+  it("reloads a page without its grid or behind a captcha", async () => {
+    show("https://www.tiktok.com/@nike", "<main></main>", about("nike"));
+    expect((await run<{ here: boolean }>(creatorHereScript("nike"))).here).toBe(false);
+    show("https://www.tiktok.com/@nike", grid + '<div class="TUXModal captcha-verify-container"></div>', about("nike"));
+    expect((await run<{ here: boolean }>(creatorHereScript("nike"))).here).toBe(false);
   });
 });
 

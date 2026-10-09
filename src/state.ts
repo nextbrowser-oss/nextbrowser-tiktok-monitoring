@@ -48,6 +48,10 @@ export interface MonitorSettings {
    *  busy video's later pages count too. A video past this is read on the
    *  next pass instead, before the ones that did not wait. */
   maxCommentReads: number;
+  /** On a comment source's first read, read one page of each watched video's
+   *  comments and list the matches at once (without announcing them), rather
+   *  than waiting for a later pass to see a count grow. */
+  listExistingComments: boolean;
   /** Report engagement_changed when a watched video's counts jump. */
   trackEngagement: boolean;
   engagement: EngagementThresholds;
@@ -217,6 +221,7 @@ export function defaultSettings(): MonitorSettings {
     ownVideos: DEFAULT_OWN_VIDEOS,
     videosPerCreator: DEFAULT_VIDEOS_PER_CREATOR,
     maxCommentReads: DEFAULT_MAX_COMMENT_READS,
+    listExistingComments: true,
     trackEngagement: true,
     engagement: defaultThresholds(),
     maxItemAgeMs: DEFAULT_MAX_ITEM_AGE_MS,
@@ -291,6 +296,7 @@ export function normalizeSettings(raw: unknown): MonitorSettings {
     ownVideos: integer(record.ownVideos, base.ownVideos, 0, 12),
     videosPerCreator: integer(record.videosPerCreator, base.videosPerCreator, 0, 10),
     maxCommentReads: integer(record.maxCommentReads, base.maxCommentReads, 0, 30),
+    listExistingComments: flag(record.listExistingComments, base.listExistingComments),
     trackEngagement: flag(record.trackEngagement, base.trackEngagement),
     engagement: normalizeThresholds(record.engagement),
     maxItemAgeMs: integer(record.maxItemAgeMs, base.maxItemAgeMs, 0),

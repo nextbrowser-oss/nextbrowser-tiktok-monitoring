@@ -350,6 +350,27 @@ export function readyScript(): string {
 })()`;
 }
 
+/** creatorHereScript says whether the tab already shows this creator's page,
+ *  drawn and readable: the path is theirs, the data block is about them (an
+ *  in-app move to another creator keeps the first page's block), the grid is
+ *  there and no captcha is. Reading such a page in place spares a reload,
+ *  and a reload of a creator page is what TikTok answers with its captcha. */
+export function creatorHereScript(handle: string): string {
+  return String.raw`(() => {${PAGE_HELPER}
+  const want = ${jsLiteral(handle.toLowerCase())};
+  let path = String(location.pathname || "");
+  try { path = decodeURIComponent(path); } catch (error) { /* keep it as written */ }
+  const onPage = path.replace(/\/+$/, "").toLowerCase() === "/@" + want;
+  const scope = rehydrated(document);
+  const detail = scope && scope["webapp.user-detail"] && typeof scope["webapp.user-detail"] === "object" ? scope["webapp.user-detail"] : null;
+  const u = detail && detail.userInfo && detail.userInfo.user && typeof detail.userInfo.user === "object" ? detail.userInfo.user : null;
+  const about = !!u && String(u.uniqueId || "").toLowerCase() === want;
+  const items = document.querySelectorAll(${jsLiteral(GRID_ITEM_SELECTOR)}).length;
+  const captcha = captchaUrl() || captchaIn(document, !!scope);
+  return { here: onPage && about && items > 0 && !captcha };
+})()`;
+}
+
 /** profileScript reads the creator page the tab shows: who the creator is and
  *  their counts from webapp.user-detail, and the videos the grid has drawn.
  *  Without the data block a drawn grid still says the profile exists. */

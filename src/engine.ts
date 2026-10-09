@@ -41,6 +41,7 @@ import {
   NOT_FOUND_CODES,
   SIGN_IN_URL,
   commentsScript,
+  creatorHereScript,
   meScript,
   originScript,
   profileScript,
@@ -578,12 +579,21 @@ class Pass {
    *  failure: the read says what the page shows. */
   private async openCreator(handle: string): Promise<ProfileSnapshot> {
     this.checkStop();
+    const started = this.now();
+    const label = handle.toLowerCase();
+    // A creator page the tab already shows is read where it is: TikTok put
+    // its captcha on the reload of a page a person had just opened (live,
+    // 2026-10-09), while reads that load no page went through.
+    const here = await this.browser.evaluate<{ here: boolean }>(creatorHereScript(handle), `here @${label}`).catch(() => undefined);
+    if (here?.here) {
+      const page = await this.browser.evaluate<ProfileSnapshot>(profileScript(), `profile @${label}`);
+      this.log("page", { handle, url: page.url, ms: this.now() - started, reused: true, captcha: page.captcha, has_data: page.has_data, status_code: page.status_code, found: page.found, private: page.private, videos: page.videos.length });
+      return page;
+    }
     // Opening a page is what a person does every few seconds at most, and
     // TikTok draws its captcha for a browser that does it faster.
     if (this.summary.requests + this.summary.pageLoads > 0) await this.sleep(this.pause(3000, 7000));
     this.checkStop();
-    const started = this.now();
-    const label = handle.toLowerCase();
     await this.browser.open(creatorUrl(handle));
     this.summary.pageLoads += 1;
     await this.browser.waitForLoad(LOAD_WAIT_SECONDS).catch(() => undefined);
@@ -708,6 +718,11 @@ class Pass {
     // the source's starting line.
     const line = watch?.commentsRead === undefined ? (postedSince ? 0 : this.at) : watch.commentsReadAt ?? source?.since ?? 0;
     const backlog = watch?.commentsBacklog;
+    // The first read of a source takes its starting line from what is there:
+    // one page of each video's comments, listed as matches but not announced
+    // (the source is a baseline). Without it a keyword comment showed only
+    // once a later pass saw a count grow, so Start showed nothing for a while.
+    if (this.state.settings.listExistingComments && !source && watch?.commentsRead === undefined && count > 0) return this.readStartingPage(facts, own, count);
     if (!backlog && count <= mark) return { items: [], fields: { commentsRead: count, commentsReadAt: this.at } };
     const kept: CommentFields = { ...held, commentsRead: mark, commentsReadAt: line };
     if (this.summary.commentsRefused) return { items: [], fields: kept };
@@ -785,6 +800,36 @@ class Pass {
       items,
       fields: { ...kept, commentsBacklog: { cursor, target, found, at: backlog?.at ?? this.at, passes }, commentsDueAt: held.commentsDueAt ?? this.at },
     };
+  }
+
+  /** readStartingPage reads the first page of a video's comments for a
+   *  source's starting line and sets the watermark to the count, so later
+   *  passes read only what is added. Past the pass's maxCommentReads, or with
+   *  comment lists refused, it only sets the watermark, as before. */
+  private async readStartingPage(facts: VideoFacts, own: boolean, count: number): Promise<ThreadRead> {
+    const fields: CommentFields = { commentsRead: count, commentsReadAt: this.at };
+    if (this.summary.commentsRefused || this.summary.commentPages >= this.state.settings.maxCommentReads) return { items: [], fields };
+    const thread = await this.fetch<CommentsSnapshot>(commentsScript(facts.id, 0), `comments ${facts.id}`);
+    this.summary.commentReads += 1;
+    this.summary.commentPages += 1;
+    if (thread.unsigned) {
+      this.refuseComments(facts.id, thread);
+      return { items: [], fields };
+    }
+    if (!thread.ok) {
+      this.log("thread_failed", { video: facts.id, cursor: 0, status: thread.status, reason: thread.reason, refused: thread.refused });
+      return { items: [], fields };
+    }
+    const context = videoContext(facts);
+    const items: TikTokItem[] = [];
+    const ids = new Set<string>();
+    for (const raw of thread.comments) {
+      if (ids.has(raw.cid)) continue;
+      ids.add(raw.cid);
+      const item = commentItem(raw, context, addressedBy(raw.text, this.handle, own));
+      if (item) items.push(item);
+    }
+    return { items, fields };
   }
 
   /** emptyList handles a list that came back empty although the count grew.

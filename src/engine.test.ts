@@ -39,8 +39,10 @@ function pass(state: MonitorState, extra: Partial<PassDeps> = {}): Promise<PassR
   });
 }
 
+/** watching sets up the tests written before the first read listed existing
+ *  comments; "the first read of a comment source" tests that behaviour. */
 function watching(patch: Partial<MonitorSettings> = {}): MonitorState {
-  return emptyState({ creators: ["rival"], keywords: ["acme"], ...patch });
+  return emptyState({ creators: ["rival"], keywords: ["acme"], listExistingComments: false, ...patch });
 }
 
 const types = (events: MonitorEvent[]) => events.map((event) => event.type);
@@ -161,6 +163,14 @@ describe("watched creators", () => {
     expect(state.videos[teaser.id]!.commentsRead).toBeUndefined();
   });
 
+  it("reads a creator page already on screen without reloading it", async () => {
+    tt.url = creatorUrl("rival");
+    const result = await pass(watching({ watchOwnVideos: false }));
+    expect(tt.opened).not.toContain(creatorUrl("rival"));
+    expect(result.summary.pageLoads).toBe(0);
+    expect(result.state.videos[theirs.id]).toBeDefined();
+  });
+
   it("learns the account from a creator's page when the home page hides it behind \"Please wait...\"", async () => {
     tt.meHidden = true;
     const result = await pass(watching());
@@ -185,6 +195,40 @@ describe("watched creators", () => {
     grow(theirs, comment("x", 70, "acme"));
     await pass(first.state);
     expect(tt.listsRead).toEqual([]);
+  });
+});
+
+describe("the first read of a comment source", () => {
+  const first = (patch: Partial<MonitorSettings> = {}) => watching({ listExistingComments: true, watchOwnVideos: false, ...patch });
+
+  it("lists keyword comments that are already there, without announcing them", async () => {
+    tt.comments[theirs.id] = [comment("fan", 30, "is acme any good?"), comment("other", 31, "nice"), comment("x", 32, "acme ships fast")];
+    theirs.comments = 3;
+    const { state, events, matches } = await pass(first());
+    expect(tt.listsRead).toEqual([theirs.id]);
+    const listed = matches.map((match) => match.item.text);
+    expect(listed).toEqual(expect.arrayContaining(["is acme any good?", "acme ships fast"]));
+    expect(listed).not.toContain("nice");
+    expect(texts(events)).toEqual([]);
+    expect(state.videos[theirs.id]!.commentsRead).toBe(3);
+  });
+
+  it("reads only what is added on the passes after it", async () => {
+    tt.comments[theirs.id] = [comment("fan", 30, "acme?")];
+    theirs.comments = 1;
+    const one = await pass(first());
+    const minute = later();
+    grow(theirs, comment("new", minute, "acme restock please"));
+    const two = await pass(one.state);
+    expect(texts(two.events)).toEqual(["acme restock please"]);
+  });
+
+  it("only sets the watermark past maxCommentReads", async () => {
+    tt.comments[theirs.id] = [comment("fan", 30, "acme?")];
+    theirs.comments = 1;
+    const { state } = await pass(first({ maxCommentReads: 0 }));
+    expect(tt.listsRead).toEqual([]);
+    expect(state.videos[theirs.id]!.commentsRead).toBe(1);
   });
 });
 

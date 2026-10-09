@@ -129,6 +129,10 @@ export class FakeTikTok implements MonitorBrowser {
         user: meta.ok && this.signedIn ? { uid: this.uid, unique_id: this.handle, nickname: "Acme" } : null,
       } satisfies MeSnapshot;
     }
+    if (label.startsWith("here @")) {
+      const [handle, creator] = this.creator(label);
+      return { here: this.url === `https://www.tiktok.com/@${handle}` && !!creator && !creator.noGrid && !creator.blank && !creator.private && creator.videos.length > 0 && !this.captcha };
+    }
     if (label.startsWith("ready @")) {
       const [, creator] = this.creator(label);
       const items = creator && !creator.noGrid && !creator.blank && !creator.private ? creator.videos.length : 0;
